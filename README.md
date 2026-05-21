@@ -1,4 +1,4 @@
-# English Story Video Generator
+# EchoEnglish
 
 Local Web workflow for creating English story narration videos. The current version focuses on beginner-friendly pure stories with scene images, MiniMax narration, quiet background music, bilingual captions, Chinese vocabulary notes, and a final MP4. The dashboard is a React/Vite PWA with liquid-glass navigation for desktop and mobile WebView use.
 
