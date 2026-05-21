@@ -1,0 +1,26 @@
+{
+  "name": "shadowing-english-story-generator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workflow for English shadowing story videos with MiniMax settings, subtitles, and video output.",
+  "main": "src/index.js",
+  "scripts": {
+    "generate": "node src/index.js",
+    "generate:sample": "node src/index.js --topic \"A Rainy Day\" --minutes 3",
+    "generate:lost-key": "node src/index.js --topic \"The Lost Key\" --minutes 3",
+    "generate:school": "node src/index.js --topic \"My First Day at School\" --minutes 3",
+    "generate:xiaomi-history": "node src/xiaomiHistoryVideo.js",
+    "web": "node src/webServer.js",
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "liquid-glass-react": "^1.1.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^8.0.14"
+  }
+}
