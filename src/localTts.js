@@ -115,7 +115,7 @@ function pickVoice(voices, requested, fallbacks) {
 }
 
 async function getSilenceFile(workDir, seconds) {
-  const normalized = Number(seconds).toFixed(1);
+  const normalized = normalizeSilenceSeconds(seconds);
   const file = path.join(workDir, `silence_${normalized.replace(".", "_")}.wav`);
   if (await pathExists(file)) {
     return file;
@@ -124,6 +124,12 @@ async function getSilenceFile(workDir, seconds) {
   await createSilence(file, normalized);
 
   return file;
+}
+
+function normalizeSilenceSeconds(seconds) {
+  const value = Number(seconds);
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+  return safeValue.toFixed(3).replace(/0+$/, "").replace(/\.$/, ".0");
 }
 
 async function createSilence(file, seconds) {

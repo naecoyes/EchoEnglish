@@ -1,31 +1,82 @@
 #!/usr/bin/env node
 
+const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
 const http = require("node:http");
 const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
+const { promisify } = require("node:util");
 const { generateStoryWorkflow } = require("./storyWorkflow");
-const { createStoryOutline, getLlmConfig } = require("./llmStoryPlanner");
+const { createPureStory, createStoryOutline, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
+const { renderMarkdown } = require("./renderers");
 const { MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
 const {
   clearSavedApiKey,
+  clearSavedGoogleApiKey,
+  clearSavedLlmApiKey,
+  clearSavedTavilyApiKey,
+  clearSavedXiaomiApiKey,
   DEFAULT_MODELS,
   getEffectiveSettings,
   getSettingsSummary,
   saveSettings,
-  testMiniMaxConnection
+  testLlmConnection,
+  testGoogleConnection,
+  testMiniMaxConnection,
+  testTavilyConnection,
+  testXiaomiConnection
 } = require("./settingsStore");
 const { listStoryPresets } = require("./storyPresets");
-const { slugify } = require("./utils");
+const { searchTopicContext } = require("./tavilySearch");
+const { getVideoTemplate, listVideoTemplates } = require("./videoTemplates");
+const { slugify, ensureDir } = require("./utils");
+const { classifyError } = require("./errorClassifier");
+const { createStages, firstFailedStage, markStage, summarizeStageCounts } = require("./jobStages");
 
 const PORT = Number(process.env.PORT || 3001);
+const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = path.resolve(".");
 const OUTPUT_ROOT = path.join(ROOT, "outputs");
 const DIST_ROOT = path.join(ROOT, "dist");
+const ACCESS_COOKIE = "EchoEnglishAccess";
+const execFileAsync = promisify(execFile);
 const jobs = new Map();
+const persistTimers = new Map();
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+
+    if (req.method === "GET" && url.pathname === "/api/access/status") {
+      const access = await getAccessState(req, url);
+      return sendJson(res, {
+        protected: access.protected,
+        authenticated: access.authenticated
+      }, access.authenticated || !access.protected ? 200 : 401);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/access/login") {
+      const access = await getAccessState(req, url);
+      if (!access.protected) {
+        return sendJson(res, { ok: true, message: "Access PIN is not configured." });
+      }
+      const body = await readJson(req);
+      const pin = String(body.pin || "").trim();
+      if (pin !== access.pin) {
+        return sendJson(res, { error: "Invalid PIN." }, 401);
+      }
+      setAccessCookie(res, access.pin);
+      return sendJson(res, { ok: true, message: "Access granted." });
+    }
+
+    const access = await getAccessState(req, url);
+    if (access.protected && !access.authenticated) {
+      if (req.method === "GET" && acceptsHtml(req)) {
+        return sendHtml(res, renderAccessPage());
+      }
+      return sendJson(res, { error: "Access PIN required." }, 401);
+    }
 
     if (req.method === "GET" && url.pathname === "/") {
       if (url.searchParams.get("output")) {
@@ -37,23 +88,44 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, "/generate");
     }
 
-    if (req.method === "GET" && url.pathname === "/settings") {
-      return sendHtml(res, renderSettingsPage());
-    }
-
     if (req.method === "GET" && url.pathname === "/api/config") {
       const settings = await getSettingsSummary();
-      const llm = getLlmConfig();
+      const llm = await getLlmConfig();
       return sendJson(res, {
         hasMiniMaxKey: settings.hasApiKey,
+        hasLlmKey: settings.llm.hasApiKey,
+        hasSearchKey: settings.search.hasTavilyKey,
+        hasXiaomiKey: settings.xiaomi?.hasApiKey || false,
+        hasGoogleKey: settings.google?.hasApiKey || false,
         defaultProvider: "minimax",
+        provider: settings.provider || "minimax",
+        media: settings.media,
         llm: {
           configured: Boolean(llm.apiKey),
           baseUrl: llm.baseUrl,
           model: llm.model
         },
+        xiaomi: {
+          configured: Boolean(settings.xiaomi?.hasApiKey),
+          baseUrl: settings.xiaomi?.baseUrl,
+          textModel: settings.xiaomi?.textModel,
+          ttsModel: settings.xiaomi?.ttsModel
+        },
+        google: {
+          configured: Boolean(settings.google?.hasApiKey),
+          baseUrl: settings.google?.baseUrl,
+          imageModel: settings.google?.imageModel,
+          ttsModel: settings.google?.ttsModel,
+          voice: settings.google?.voice
+        },
+        search: {
+          configured: Boolean(settings.search.hasTavilyKey),
+          provider: "tavily",
+          keySource: settings.search.keySource
+        },
         settings,
-        presets: listStoryPresets()
+        presets: listStoryPresets(),
+        videoTemplates: listVideoTemplates()
       });
     }
 
@@ -72,8 +144,48 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, result, result.ok ? 200 : 400);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/settings/llm-test") {
+      const body = await readJson(req);
+      const result = await testLlmConnection(body);
+      return sendJson(res, result, result.ok ? 200 : 400);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings/tavily-test") {
+      const body = await readJson(req);
+      const result = await testTavilyConnection(body);
+      return sendJson(res, result, result.ok ? 200 : 400);
+    }
+
     if (req.method === "DELETE" && url.pathname === "/api/settings/key") {
       return sendJson(res, await clearSavedApiKey());
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/api/settings/llm-key") {
+      return sendJson(res, await clearSavedLlmApiKey());
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/api/settings/tavily-key") {
+      return sendJson(res, await clearSavedTavilyApiKey());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings/xiaomi-test") {
+      const body = await readJson(req);
+      const result = await testXiaomiConnection(body);
+      return sendJson(res, result, result.ok ? 200 : 400);
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/api/settings/xiaomi-key") {
+      return sendJson(res, await clearSavedXiaomiApiKey());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings/google-test") {
+      const body = await readJson(req);
+      const result = await testGoogleConnection(body);
+      return sendJson(res, result, result.ok ? 200 : 400);
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/api/settings/google-key") {
+      return sendJson(res, await clearSavedGoogleApiKey());
     }
 
     if (req.method === "GET" && url.pathname === "/api/recent-outputs") {
@@ -85,18 +197,90 @@ const server = http.createServer(async (req, res) => {
       return await startStoryJob(res, body);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/story-draft") {
+      const body = await readJson(req);
+      const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
+      const minutes = clampMinutes(body.minutes);
+      const template = getVideoTemplate(body.templateId || body.template?.id);
+      const { outline, searchContext } = await buildSearchBackedOutline(topic, minutes, template);
+      const draft = await createPureStory({
+        topic,
+        targetDurationMinutes: minutes,
+        level: "beginner",
+        annotationStyle: "zh-brief",
+        outline,
+        template
+      });
+      const autosaved = await saveStoryDraft({ topic, template, outline, draft, searchContext, revisionNote: null });
+      return sendJson(res, {
+        outline,
+        draft,
+        searchContext,
+        imageTarget: countDraftImages(draft),
+        musicTarget: 3,
+        template,
+        autosaved
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/revise-story-draft") {
+      const body = await readJson(req);
+      const topic = String(body.topic || body.draft?.topic || "Story Video").trim() || "Story Video";
+      const minutes = clampMinutes(body.minutes);
+      const template = getVideoTemplate(body.templateId || body.template?.id || body.draft?.template?.id);
+      const draft = await reviseStoryDraft({
+        topic,
+        targetDurationMinutes: minutes,
+        draft: body.draft,
+        feedback: body.feedback,
+        template
+      });
+      const autosaved = await saveStoryDraft({
+        topic,
+        template,
+        outline: draft.outline || body.draft?.outline || null,
+        draft,
+        searchContext: draft.outline?.searchContext || body.draft?.outline?.searchContext || null,
+        revisionNote: body.feedback || null
+      });
+      return sendJson(res, {
+        draft,
+        imageTarget: countDraftImages(draft),
+        musicTarget: 3,
+        template,
+        autosaved
+      });
+    }
+
     if (req.method === "POST" && url.pathname === "/api/story-outline") {
       const body = await readJson(req);
       const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
       const minutes = clampMinutes(body.minutes);
+      const template = getVideoTemplate(body.templateId || body.template?.id);
+      const { outline, searchContext } = await buildSearchBackedOutline(topic, minutes, template);
       return sendJson(res, {
-        outline: await createStoryOutline({ topic, minutes })
+        outline,
+        searchContext,
+        template
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/jobs/latest") {
+      return sendJson(res, await serializeLatestJob());
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/continue")) {
+      const id = url.pathname.split("/").at(-2);
+      return await continueStoryJob(res, id);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
       const id = url.pathname.split("/").pop();
-      return sendJson(res, serializeJob(id));
+      return sendJson(res, await serializeJob(id));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/media-info") {
+      return sendJson(res, await getMediaInfo(url.searchParams.get("path")));
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
@@ -117,18 +301,15 @@ async function startStoryJob(res, body) {
   const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
   const minutes = clampMinutes(body.minutes);
   const settings = await getEffectiveSettings();
-  const ttsProvider = "minimax";
-  const imageMode = "minimax";
-
-  if (!settings.minimaxApiKey) {
-    return sendJson(res, {
-      error: "MiniMax API key is required. Open Settings and save your API key before generating videos."
-    }, 400);
-  }
+  const validation = validateGenerationSettings(settings);
+  if (validation) return sendJson(res, { error: validation }, 400);
 
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const slug = slugify(topic);
   const logs = [];
+  const confirmedOutline = normalizeOutlineInput(body.outline);
+  const confirmedDraft = normalizeStoryDraftInput(body.storyDraft);
+  const template = getVideoTemplate(body.templateId || body.template?.id || confirmedDraft?.template?.id || confirmedOutline?.template?.id);
   const job = {
     id,
     status: "queued",
@@ -137,38 +318,32 @@ async function startStoryJob(res, body) {
     minutes,
     logs,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    stages: createStages(),
+    recoverable: false,
+    failedStage: null,
+    errorType: null,
+    request: {
+      topic,
+      minutes,
+      templateId: template?.id || null,
+      outline: confirmedOutline,
+      storyDraft: confirmedDraft
+    },
     result: null,
     error: null
   };
-  jobs.set(id, job);
-
-  setImmediate(async () => {
-    job.status = "running";
-    try {
-      job.result = await generateStoryWorkflow({
-        topic,
-        minutes,
-        outputRoot: OUTPUT_ROOT,
-        ttsProvider,
-        imageMode,
-        apiKey: settings.minimaxApiKey,
-        minimaxModel: settings.models.tts,
-        imageModel: settings.models.image,
-        musicMode: "minimax",
-        musicModel: MINIMAX_MUSIC_MODEL,
-        musicVolume: 0.12,
-        storyMode: "pure-story",
-        storyOutline: normalizeOutlineInput(body.outline),
-        logs
-      });
-      job.status = "completed";
-      job.completedAt = new Date().toISOString();
-    } catch (error) {
-      job.status = "failed";
-      job.error = error.message;
-      logs.push(`[${new Date().toISOString()}] Error: ${error.message}`);
-    }
+  attachPersistentLogs(job);
+  markStage(job.stages, "draft", confirmedDraft ? "completed" : "pending", {
+    counts: confirmedDraft ? {
+      scenes: confirmedDraft.sections?.length || 0,
+      sentences: countDraftImages(confirmedDraft)
+    } : null
   });
+  jobs.set(id, job);
+  await persistJob(job);
+
+  runStoryJob(job);
 
   return sendJson(res, {
     id,
@@ -179,30 +354,354 @@ async function startStoryJob(res, body) {
   }, 202);
 }
 
-function serializeJob(id) {
-  const job = jobs.get(id);
+async function continueStoryJob(res, id) {
+  const job = await getJob(id);
+  if (!job) {
+    return sendJson(res, { error: "Job not found" }, 404);
+  }
+  if (job.status === "running" || job.status === "queued") {
+    return sendJson(res, serializeJobObject(job), 409);
+  }
+  if (job.status === "completed") {
+    return sendJson(res, { error: "This job is already completed." }, 400);
+  }
+
+  const settings = await getEffectiveSettings();
+  const validation = validateGenerationSettings(settings);
+  if (validation) return sendJson(res, { error: validation }, 400);
+
+  attachPersistentLogs(job);
+  job.stages = createStages(job.stages);
+  job.status = "queued";
+  job.error = null;
+  job.errorType = null;
+  job.recoverable = false;
+  job.failedStage = null;
+  job.updatedAt = new Date().toISOString();
+  job.logs.push(`[${new Date().toISOString()}] Continue requested. Reusing saved draft, cached audio, existing images, and music files when available.`);
+  await persistJob(job);
+  jobs.set(job.id, job);
+  runStoryJob(job);
+  return sendJson(res, serializeJobObject(job), 202);
+}
+
+function runStoryJob(job) {
+  attachPersistentLogs(job);
+  job.stages = createStages(job.stages);
+  setImmediate(async () => {
+    job.status = "running";
+    job.startedAt = job.startedAt || new Date().toISOString();
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    try {
+      const settings = await getEffectiveSettings();
+      const validation = validateGenerationSettings(settings);
+      if (validation) throw new Error(validation);
+
+      const ttsProvider = settings.media?.ttsProvider || (settings.provider === "xiaomi" ? "xiaomi" : "minimax");
+      const imageMode = settings.media?.imageProvider || "minimax";
+      const template = getVideoTemplate(job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id);
+      const confirmedDraft = normalizeStoryDraftInput(job.request?.storyDraft);
+      let storyOutline = normalizeOutlineInput(job.request?.outline);
+
+      if (!confirmedDraft && !storyOutline?.searchContext) {
+        job.logs.push(`[${new Date().toISOString()}] Searching topic context with Tavily`);
+        const searchContext = await searchTopicContext({
+          topic: job.topic,
+          apiKey: settings.search.tavilyApiKey,
+          searchHint: template.searchHint
+        });
+        storyOutline = {
+          ...(storyOutline || {}),
+          searchContext,
+          source: storyOutline?.source || "tavily",
+          template
+        };
+        job.request.outline = storyOutline;
+        await persistJob(job);
+      }
+
+      job.result = await generateStoryWorkflow({
+        topic: job.topic,
+        minutes: job.minutes,
+        outputRoot: OUTPUT_ROOT,
+        ttsProvider,
+        imageMode,
+        apiKey: settings.minimaxApiKey,
+        minimaxModel: settings.models.tts,
+        minimaxVoice: settings.minimax.englishVoice,
+        minimaxCnVoice: settings.minimax.chineseVoice,
+        imageModel: settings.models.image,
+        googleImageModel: settings.google?.imageModel,
+        musicMode: "minimax",
+        musicModel: settings.models.music || MINIMAX_MUSIC_MODEL,
+        musicCount: settings.minimax.musicTrackCount || 3,
+        musicVolume: 0.12,
+        storyMode: "pure-story",
+        template,
+        storyOutline,
+        storyDraft: confirmedDraft,
+        logs: job.logs,
+        onStage: async (stageId, status, patch) => {
+          markStage(job.stages, stageId, status, patch);
+          job.failedStage = firstFailedStage(job.stages);
+          job.recoverable = Boolean(Object.values(job.stages).some((stage) => stage.status === "failed" && stage.recoverable));
+          job.updatedAt = new Date().toISOString();
+          await persistJob(job);
+        }
+      });
+      job.status = "completed";
+      job.error = null;
+      job.errorType = null;
+      job.recoverable = false;
+      job.failedStage = null;
+      job.completedAt = new Date().toISOString();
+      job.updatedAt = new Date().toISOString();
+      await persistJob(job);
+    } catch (error) {
+      const classification = classifyError(error);
+      job.status = classification.recoverable ? "failed_recoverable" : "failed";
+      job.error = error.message;
+      job.errorType = classification.type;
+      job.recoverable = classification.recoverable;
+      job.failedStage = firstFailedStage(job.stages);
+      job.updatedAt = new Date().toISOString();
+      job.logs.push(`[${new Date().toISOString()}] Error: ${error.message}`);
+      await persistJob(job);
+    }
+  });
+}
+
+function validateGenerationSettings(settings) {
+  if (!settings.minimaxApiKey) {
+    return "MiniMax API key is required for background music. Open Settings and save your MiniMax API key before generating videos.";
+  }
+  if ((settings.provider === "xiaomi" || settings.media?.ttsProvider === "xiaomi") && !settings.xiaomi?.apiKey) {
+    return "Xiaomi MiMo API key is required when Xiaomi provider is active. Open Settings and save your Xiaomi key.";
+  }
+  if ((settings.media?.ttsProvider === "google" || settings.media?.imageProvider === "google") && !settings.google?.apiKey) {
+    return "Google API key is required when Google TTS or Imagen is selected. Open Settings and save your Google key.";
+  }
+  if (settings.provider !== "xiaomi" && !settings.llm.apiKey) {
+    return "LLM API key is required. Open Settings and save your LLM API key before generating story videos.";
+  }
+  if (!settings.search.tavilyApiKey) {
+    return "Tavily API key is required. Open Settings and save your Tavily API key before generating story videos.";
+  }
+  return null;
+}
+
+async function buildSearchBackedOutline(topic, minutes, template = null) {
+  const settings = await getEffectiveSettings();
+  if (!settings.search.tavilyApiKey) {
+    throw new Error("Tavily API key is required for search-backed story planning. Open Settings and save a Tavily key.");
+  }
+  const searchContext = await searchTopicContext({ topic, apiKey: settings.search.tavilyApiKey, searchHint: template?.searchHint });
+  const outline = await createStoryOutline({ topic, minutes, searchContext, template });
+  return { outline, searchContext };
+}
+
+async function serializeJob(id) {
+  const job = await getJob(id);
   if (!job) {
     return { error: "Job not found" };
   }
 
+  return serializeJobObject(job);
+}
+
+async function serializeLatestJob() {
+  const activeJobs = [...jobs.values()].sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+  if (activeJobs[0]) return serializeJobObject(activeJobs[0]);
+  const persisted = await listPersistedJobs();
+  if (persisted[0]) return serializeJobObject(persisted[0]);
+  return { error: "Job not found" };
+}
+
+function serializeJobObject(job) {
   const base = `/outputs/${job.slug}/`;
   return {
     id: job.id,
     status: job.status,
     topic: job.topic,
+    slug: job.slug,
     minutes: job.minutes,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    recoverable: Boolean(job.recoverable),
+    failedStage: job.failedStage || firstFailedStage(job.stages),
+    errorType: job.errorType || null,
+    stages: createStages(job.stages),
+    counts: summarizeStageCounts(job.stages),
     logs: job.logs,
     error: job.error,
-    outputs: job.status === "completed" ? {
+    outputs: {
       video: `${base}final.mp4`,
       script: `${base}script.md`,
       subtitles: `${base}subtitles.srt`,
       audio: `${base}audio.wav`,
       music: job.result?.musicSummary ? `${base}music/background.mp3` : null,
       imagePrompts: `${base}image-prompts.md`,
-      scriptJson: `${base}script.json`
+      scriptJson: `${base}script.json`,
+      jobState: `${base}job-state.json`,
+      audioManifest: `${base}audio-manifest.json`,
+      imageManifest: `${base}image-manifest.json`,
+      musicManifest: `${base}music-manifest.json`,
+      qualityReport: `${base}quality-report.json`
+    }
+  };
+}
+
+async function getJob(id) {
+  if (!id) return null;
+  const liveJob = jobs.get(id);
+  if (liveJob) return liveJob;
+  const persisted = await readPersistedJobById(id);
+  if (persisted) {
+    normalizePersistedJob(persisted);
+    attachPersistentLogs(persisted);
+    jobs.set(persisted.id, persisted);
+  }
+  return persisted;
+}
+
+function attachPersistentLogs(job) {
+  if (!job || job._logsAttached) return;
+  if (!Array.isArray(job.logs)) job.logs = [];
+  const originalPush = Array.prototype.push;
+  Object.defineProperty(job.logs, "push", {
+    configurable: true,
+    value(...items) {
+      const length = originalPush.apply(this, items);
+      job.updatedAt = new Date().toISOString();
+      persistJobSoon(job);
+      return length;
+    }
+  });
+  job._logsAttached = true;
+}
+
+function persistJobSoon(job) {
+  if (!job?.id) return;
+  clearTimeout(persistTimers.get(job.id));
+  persistTimers.set(job.id, setTimeout(() => {
+    persistTimers.delete(job.id);
+    persistJob(job).catch(() => {});
+  }, 250));
+}
+
+async function persistJob(job) {
+  if (!job?.slug) return;
+  const outputDir = path.join(OUTPUT_ROOT, job.slug);
+  await ensureDir(outputDir);
+  const persisted = {
+    id: job.id,
+    status: job.status,
+    topic: job.topic,
+    slug: job.slug,
+    minutes: job.minutes,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt || null,
+    completedAt: job.completedAt || null,
+    updatedAt: new Date().toISOString(),
+    error: job.error || null,
+    errorType: job.errorType || null,
+    recoverable: Boolean(job.recoverable),
+    failedStage: job.failedStage || firstFailedStage(job.stages),
+    stages: createStages(job.stages),
+    request: job.request || null,
+    logs: Array.isArray(job.logs) ? [...job.logs] : [],
+    result: job.result ? {
+      durationSeconds: job.result.durationSeconds || null,
+      files: job.result.files || null,
+      audioSummary: summarizeMediaResult(job.result.audioSummary),
+      musicSummary: summarizeMediaResult(job.result.musicSummary),
+      videoSummary: summarizeMediaResult(job.result.videoSummary),
+      qualityReport: job.result.qualityReport || null
     } : null
   };
+  job.updatedAt = persisted.updatedAt;
+  await fs.writeFile(path.join(outputDir, "job-state.json"), `${JSON.stringify(persisted, null, 2)}\n`, "utf8");
+}
+
+function summarizeMediaResult(value) {
+  if (!value || typeof value !== "object") return value || null;
+  return {
+    provider: value.provider || null,
+    model: value.model || null,
+    durationSeconds: value.durationSeconds || null,
+    reused: value.reused || false,
+    tracks: Array.isArray(value.tracks) ? value.tracks.length : undefined
+  };
+}
+
+async function readPersistedJobById(id) {
+  const jobs = await listPersistedJobs();
+  return jobs.find((job) => job.id === id) || null;
+}
+
+async function listPersistedJobs() {
+  let entries = [];
+  try {
+    entries = await fs.readdir(OUTPUT_ROOT, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const items = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const file = path.join(OUTPUT_ROOT, entry.name, "job-state.json");
+    const job = await readOptionalJson(file);
+    if (!job?.id) continue;
+    normalizePersistedJob(job);
+    items.push({
+      ...job,
+      slug: job.slug || entry.name,
+      stages: createStages(job.stages),
+      logs: Array.isArray(job.logs) ? job.logs : []
+    });
+  }
+  return items.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+}
+
+function normalizePersistedJob(job) {
+  job.stages = createStages(job.stages);
+  job.logs = Array.isArray(job.logs) ? job.logs : [];
+  if ((job.status === "failed" || job.status === "failed_recoverable") && job.error) {
+    const classification = classifyError(job.error);
+    job.errorType = job.errorType || classification.type;
+    job.recoverable = Boolean(job.recoverable || classification.recoverable);
+    if (classification.recoverable) job.status = "failed_recoverable";
+  }
+  if (!job.failedStage) {
+    job.failedStage = firstFailedStage(job.stages) || inferFailedStageFromLogs(job.logs, job.error);
+  }
+  if (job.failedStage && job.stages[job.failedStage]?.status !== "failed" && job.error) {
+    const classification = classifyError(job.error);
+    const completedBefore = {
+      images: ["draft", "script-assets", "tts"],
+      music: ["draft", "script-assets", "tts", "images"],
+      compose: ["draft", "script-assets", "tts", "images", "music"],
+      quality: ["draft", "script-assets", "tts", "images", "music", "compose"]
+    }[job.failedStage] || [];
+    completedBefore.forEach((stageId) => markStage(job.stages, stageId, "completed"));
+    markStage(job.stages, job.failedStage, "failed", {
+      error: job.error,
+      errorType: classification.type,
+      recoverable: classification.recoverable
+    });
+  }
+}
+
+function inferFailedStageFromLogs(logs = [], error = "") {
+  const text = `${logs.join("\n")}\n${error}`.toLowerCase();
+  if (text.includes("generating scene images") || text.includes("image api")) return "images";
+  if (text.includes("background music") || text.includes("music")) return "music";
+  if (text.includes("composing final mp4") || text.includes("encoding final mp4")) return "compose";
+  if (text.includes("quality report")) return "quality";
+  if (text.includes("generating audio") || /audio \d+\/\d+/.test(text)) return "tts";
+  if (text.includes("script.json") || text.includes("subtitles")) return "script-assets";
+  return null;
 }
 
 async function listRecentOutputs(limit = 8) {
@@ -247,6 +746,32 @@ async function readOptionalJson(file) {
   }
 }
 
+async function saveStoryDraft({ topic, template, outline, draft, searchContext, revisionNote }) {
+  const slug = slugify(topic || draft?.topic || "story-draft");
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  await ensureDir(outputDir);
+  const savedAt = new Date().toISOString();
+  const draftJson = {
+    savedAt,
+    slug,
+    topic: topic || draft?.topic || "",
+    template: template || draft?.template || outline?.template || null,
+    outline: outline || draft?.outline || null,
+    searchContext: searchContext || outline?.searchContext || draft?.outline?.searchContext || null,
+    revisionNote: typeof revisionNote === "string" && revisionNote.trim() ? revisionNote.trim() : null,
+    draft
+  };
+  const draftJsonPath = path.join(outputDir, "draft.json");
+  const draftMdPath = path.join(outputDir, "draft.md");
+  await fs.writeFile(draftJsonPath, `${JSON.stringify(draftJson, null, 2)}\n`, "utf8");
+  await fs.writeFile(draftMdPath, renderMarkdown(draft), "utf8");
+  return {
+    savedAt,
+    draftJson: `/outputs/${slug}/draft.json`,
+    draftMd: `/outputs/${slug}/draft.md`
+  };
+}
+
 async function outputPathsForSlug(slug) {
   const base = `/outputs/${slug}/`;
   const musicPath = path.join(OUTPUT_ROOT, slug, "music", "background.mp3");
@@ -256,9 +781,48 @@ async function outputPathsForSlug(slug) {
     subtitles: `${base}subtitles.srt`,
     audio: `${base}audio.wav`,
     music: await fileExists(musicPath) ? `${base}music/background.mp3` : null,
+    draftJson: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.json")) ? `${base}draft.json` : null,
+    draftMd: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.md")) ? `${base}draft.md` : null,
     imagePrompts: `${base}image-prompts.md`,
-    scriptJson: `${base}script.json`
+    scriptJson: `${base}script.json`,
+    jobState: await fileExists(path.join(OUTPUT_ROOT, slug, "job-state.json")) ? `${base}job-state.json` : null,
+    audioManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "audio-manifest.json")) ? `${base}audio-manifest.json` : null,
+    imageManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "image-manifest.json")) ? `${base}image-manifest.json` : null,
+    musicManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "music-manifest.json")) ? `${base}music-manifest.json` : null,
+    qualityReport: await fileExists(path.join(OUTPUT_ROOT, slug, "quality-report.json")) ? `${base}quality-report.json` : null
   };
+}
+
+async function getMediaInfo(outputPath) {
+  const target = resolveOutputPath(outputPath);
+  if (!target) {
+    throw new Error("Invalid media path.");
+  }
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    target
+  ], {
+    maxBuffer: 1024 * 1024
+  });
+  const durationSeconds = Number(stdout.trim());
+  return {
+    path: outputPath,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0
+  };
+}
+
+function resolveOutputPath(outputPath) {
+  const text = String(outputPath || "");
+  if (!text.startsWith("/outputs/")) return null;
+  const relative = decodeURIComponent(text).replace(/^\/outputs\//, "");
+  const target = path.resolve(OUTPUT_ROOT, relative);
+  const insideOutputRoot = target === OUTPUT_ROOT || target.startsWith(`${OUTPUT_ROOT}${path.sep}`);
+  return insideOutputRoot ? target : null;
 }
 
 async function fileExists(file) {
@@ -279,11 +843,8 @@ function titleFromSlug(slug) {
 }
 
 async function serveOutputFile(res, pathname) {
-  const decoded = decodeURIComponent(pathname);
-  const relative = decoded.replace(/^\/outputs\//, "");
-  const target = path.resolve(OUTPUT_ROOT, relative);
-  const insideOutputRoot = target === OUTPUT_ROOT || target.startsWith(`${OUTPUT_ROOT}${path.sep}`);
-  if (!insideOutputRoot) {
+  const target = resolveOutputPath(pathname);
+  if (!target) {
     return sendJson(res, { error: "Invalid output path" }, 403);
   }
 
@@ -1705,9 +2266,7 @@ function renderDashboard() {
 }
 
 function clampMinutes(value) {
-  const minutes = Number(value || 15);
-  if (!Number.isFinite(minutes)) return 15;
-  return Math.min(20, Math.max(15, Math.round(minutes)));
+  return 15;
 }
 
 function resolveOption(value, allowed, fallback) {
@@ -1727,8 +2286,216 @@ function normalizeOutlineInput(outline) {
     storyBeats: Array.isArray(outline.storyBeats) ? outline.storyBeats.map((item) => String(item || "").trim()).filter(Boolean) : [],
     vocabularyFocus: Array.isArray(outline.vocabularyFocus) ? outline.vocabularyFocus.map((item) => String(item || "").trim()).filter(Boolean) : [],
     targetMinutes: Number(outline.targetMinutes || 15),
-    source: outline.source || "user-confirmed"
+    source: outline.source || "user-confirmed",
+    searchContext: normalizeSearchContextInput(outline.searchContext)
   };
+}
+
+function normalizeStoryDraftInput(draft) {
+  if (!draft || typeof draft !== "object") return null;
+  const sections = Array.isArray(draft.sections)
+    ? draft.sections.map((section, index) => ({
+      ...section,
+      title: String(section?.title || `Scene ${index + 1}`).trim(),
+      baseSectionIndex: Number.isInteger(section?.baseSectionIndex) ? section.baseSectionIndex : index,
+      imageVariantIndex: Number.isInteger(section?.imageVariantIndex) ? section.imageVariantIndex : 0,
+      imageBeatSize: 1,
+      imageBeatCount: Array.isArray(section?.sentences) ? section.sentences.length : 1,
+      sentences: Array.isArray(section?.sentences) ? section.sentences.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      translations: Array.isArray(section?.translations) ? section.translations.map((item) => String(item || "").trim()) : [],
+      vocabulary: Array.isArray(section?.vocabulary) ? section.vocabulary : []
+    })).filter((section) => section.sentences.length)
+    : [];
+  return {
+    ...draft,
+    version: draft.version || "0.2.0",
+    mode: "pure-story",
+    topic: String(draft.topic || "").trim(),
+    targetDurationMinutes: 15,
+    defaults: {
+      sentencePauseSeconds: Number(draft.defaults?.sentencePauseSeconds || 0.45),
+      sectionPauseSeconds: 0,
+      vocabularyPauseSeconds: 0
+    },
+    sections,
+    opening: [],
+    closing: []
+  };
+}
+
+function countDraftImages(draft) {
+  return (draft?.sections || []).reduce((total, section) => total + Math.max(1, Number(section.imageBeatCount || section.sentences?.length || 1)), 0);
+}
+
+function normalizeSearchContextInput(searchContext) {
+  if (!searchContext || typeof searchContext !== "object") return null;
+  return {
+    source: String(searchContext.source || "tavily").trim(),
+    query: String(searchContext.query || "").trim(),
+    answer: String(searchContext.answer || "").trim(),
+    searchedAt: String(searchContext.searchedAt || "").trim(),
+    results: Array.isArray(searchContext.results)
+      ? searchContext.results.map((result) => ({
+        title: String(result?.title || "").trim(),
+        url: String(result?.url || "").trim(),
+        content: String(result?.content || "").trim(),
+        score: Number.isFinite(Number(result?.score)) ? Number(result.score) : null
+      })).filter((result) => result.title || result.url || result.content).slice(0, 8)
+      : []
+  };
+}
+
+async function getAccessState(req, url) {
+  const settings = await getEffectiveSettings();
+  const pin = String(settings.access?.pin || "").trim();
+  return {
+    protected: Boolean(pin),
+    authenticated: !pin || isAccessAuthenticated(req, url, pin),
+    pin
+  };
+}
+
+function isAccessAuthenticated(req, url, pin) {
+  const providedPin = String(req.headers["x-echoenglish-pin"] || url.searchParams.get("pin") || "").trim();
+  if (providedPin && providedPin === pin) return true;
+  const cookies = parseCookies(req.headers.cookie || "");
+  return cookies[ACCESS_COOKIE] === accessTokenFor(pin);
+}
+
+function setAccessCookie(res, pin) {
+  res.setHeader("Set-Cookie", [
+    `${ACCESS_COOKIE}=${accessTokenFor(pin)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`
+  ]);
+}
+
+function accessTokenFor(pin) {
+  return crypto.createHmac("sha256", String(pin)).update("echoenglish-access-v1").digest("hex");
+}
+
+function parseCookies(header) {
+  return String(header || "").split(";").reduce((cookies, pair) => {
+    const index = pair.indexOf("=");
+    if (index === -1) return cookies;
+    const key = pair.slice(0, index).trim();
+    const value = pair.slice(index + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function acceptsHtml(req) {
+  return String(req.headers.accept || "").includes("text/html");
+}
+
+function renderAccessPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eef6ff">
+  <title>EchoEnglish Access</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 18% 25%, rgba(61, 143, 255, 0.16), transparent 28%),
+        radial-gradient(circle at 78% 72%, rgba(85, 217, 186, 0.15), transparent 30%),
+        linear-gradient(135deg, #f9fbff, #eef5ff);
+      color: #07142d;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    }
+    main {
+      width: min(430px, calc(100vw - 32px));
+      padding: 34px;
+      border: 1px solid rgba(255, 255, 255, 0.85);
+      border-radius: 34px;
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 24px 80px rgba(43, 83, 150, 0.18);
+      backdrop-filter: blur(24px) saturate(1.2);
+    }
+    .logo {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #eaf4ff, #ffffff);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 10px 26px rgba(24, 119, 255, 0.18);
+      color: #0878ff;
+      font-weight: 900;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.05; letter-spacing: 0; }
+    p { margin: 0 0 24px; color: #52627d; font-size: 14px; line-height: 1.55; }
+    label { display: grid; gap: 9px; color: #20304a; font-size: 12px; font-weight: 800; }
+    input {
+      width: 100%;
+      height: 50px;
+      border: 1px solid rgba(125, 153, 190, 0.35);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.82);
+      padding: 0 16px;
+      font-size: 18px;
+      letter-spacing: 0.2em;
+      outline: none;
+      box-shadow: inset 0 1px 2px rgba(20, 45, 82, 0.06);
+    }
+    input:focus { border-color: #1683ff; box-shadow: 0 0 0 4px rgba(22, 131, 255, 0.12); }
+    button {
+      width: 100%;
+      height: 50px;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #2e93ff, #0878ff);
+      color: #fff;
+      font-weight: 900;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.38), 0 16px 30px rgba(8,120,255,0.24);
+    }
+    .message { min-height: 20px; margin-top: 14px; color: #b42318; font-weight: 800; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="logo">E</div>
+    <h1>EchoEnglish</h1>
+    <p>This local dashboard is protected. Enter the access PIN to continue.</p>
+    <form id="form">
+      <label>Access PIN
+        <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus>
+      </label>
+      <button type="submit">Unlock Dashboard</button>
+      <div class="message" id="message"></div>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById("form");
+    const pin = document.getElementById("pin");
+    const message = document.getElementById("message");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      message.textContent = "";
+      const response = await fetch("/api/access/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pin.value })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        message.textContent = data.error || "Could not unlock.";
+        return;
+      }
+      window.location.reload();
+    });
+  </script>
+</body>
+</html>`;
 }
 
 async function readJson(req) {
@@ -1783,6 +2550,18 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`English story video generator: http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+  const localUrl = `http://127.0.0.1:${PORT}`;
+  const networkUrls = getLanAddresses().map((address) => `http://${address}:${PORT}`);
+  console.log(`English story video generator: ${localUrl}`);
+  if (HOST === "0.0.0.0" || HOST === "::") {
+    networkUrls.forEach((url) => console.log(`LAN access: ${url}`));
+  }
 });
+
+function getLanAddresses() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((entry) => entry && entry.family === "IPv4" && !entry.internal)
+    .map((entry) => entry.address);
+}

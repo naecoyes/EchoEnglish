@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { ensureDir, pathExists } = require("./utils");
+const { initImageManifest, updateImageManifest } = require("./outputManifests");
 
 const API_URL = "https://api.minimaxi.com/v1/image_generation";
 
@@ -11,12 +12,18 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
 
   const imagesDir = path.join(outputDir, "images");
   await ensureDir(imagesDir);
+  await initImageManifest(outputDir, scenes);
 
   const results = [];
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     const cachedPath = await findExistingImage(imagesDir, scene.id);
     if (cachedPath) {
+      await updateImageManifest(outputDir, scene.id, {
+        status: "completed",
+        imagePath: cachedPath,
+        error: null
+      });
       results.push({
         sceneId: scene.id,
         imageUrl: null,
@@ -26,17 +33,38 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
       continue;
     }
 
-    const imageUrl = await requestImage({
-      apiKey,
-      model,
-      prompt: scene.imagePrompt || buildPrompt(scene),
-      aspectRatio,
-      promptOptimizer
+    await updateImageManifest(outputDir, scene.id, {
+      status: "running",
+      error: null
     });
 
-    const bytes = await downloadImageWithRetry(imageUrl, scene.id);
-    const outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
-    await fs.writeFile(outputPath, bytes);
+    let imageUrl = null;
+    let outputPath = null;
+    try {
+      imageUrl = await requestImage({
+        apiKey,
+        model,
+        prompt: scene.imagePrompt || buildPrompt(scene),
+        aspectRatio,
+        promptOptimizer
+      });
+
+      const bytes = await downloadImageWithRetry(imageUrl, scene.id);
+      outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
+      await fs.writeFile(outputPath, bytes);
+    } catch (error) {
+      await updateImageManifest(outputDir, scene.id, {
+        status: "failed",
+        imagePath: null,
+        error: error.message
+      });
+      throw error;
+    }
+    await updateImageManifest(outputDir, scene.id, {
+      status: "completed",
+      imagePath: outputPath,
+      error: null
+    });
     results.push({
       sceneId: scene.id,
       imageUrl,

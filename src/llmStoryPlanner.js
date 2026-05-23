@@ -1,23 +1,26 @@
-const DEFAULT_LLM_BASE = "https://coding.dashscope.aliyuncs.com/v1";
-const DEFAULT_LLM_MODEL = "openai/qwen3.6-plus";
+const { DEFAULT_LLM, getEffectiveSettings } = require("./settingsStore");
+const { formatSearchContext } = require("./tavilySearch");
 
-async function createStoryOutline({ topic, minutes }) {
-  const config = getLlmConfig();
+async function createStoryOutline({ topic, minutes, searchContext = null, template = null }) {
+  const config = await getLlmConfig();
   if (!config.apiKey) {
-    return {
-      ...fallbackOutline(topic, minutes),
-      source: "local"
-    };
+    throw new Error("LLM API key is required for story overview generation. Open Settings and save an LLM API key.");
   }
+  const factualMode = isFactualTemplate(template) || isFactualHistoryTopic(topic);
 
   const prompt = [
-    "Create a concise story plan for a 15-20 minute English learning story video.",
+    "Create a concise story plan for a fixed 15-minute English learning story video.",
     "The user will review this plan before video generation.",
+    template ? formatTemplateForPrompt(template) : "",
+    factualMode
+      ? "This topic is about a real company, product, person, or history. Use factual documentary mode, not fictional story mode."
+      : "If the topic is fictional or generic, use a simple story mode.",
     "Return only valid JSON with this shape:",
     "{",
     '  "title": "string",',
     '  "genre": "string",',
     '  "level": "beginner",',
+    '  "contentMode": "factual-documentary or fictional-story",',
     '  "summary": "2-3 sentences",',
     '  "mainCharacter": "string",',
     '  "setting": "string",',
@@ -27,64 +30,97 @@ async function createStoryOutline({ topic, minutes }) {
     "}",
     `Topic: ${topic}`,
     `Target minutes: ${minutes}`,
-    "Keep the plot simple, emotional, visual, and suitable for beginner English learners."
-  ].join("\n");
+    "Keep the plan simple, emotional, visual, and suitable for beginner English learners.",
+    "Use the web search context when the topic involves real people, companies, places, history, news, or culture.",
+    "Do not invent factual claims that conflict with the search context.",
+    factualMode
+      ? "For factual documentary mode: do not invent a fictional protagonist, fictional employee, fictional dialogue, or private scene. Use real dates, named public people or organizations from the sources, and a clear chronological timeline. The storyBeats must be factual milestones, not imagined workshop drama."
+      : "",
+    `Web search context:\n${formatSearchContext(searchContext)}`
+  ].filter(Boolean).join("\n");
 
-  try {
-    const payload = await callChatJson(config, prompt, 2400);
-    return normalizeOutline(payload, topic, minutes, "llm");
-  } catch (error) {
-    return {
-      ...fallbackOutline(topic, minutes),
-      source: "local",
-      warning: `LLM outline failed: ${error.message}`
-    };
-  }
+  const payload = await callChatJson(config, prompt, 2400);
+  return normalizeOutline(payload, topic, minutes, searchContext ? "llm+tavily" : "llm", searchContext, template);
 }
 
-async function createPureStory({ topic, targetDurationMinutes, level, annotationStyle, outline }) {
-  const config = getLlmConfig();
-  if (config.apiKey) {
-    try {
-      const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline), 22000);
-      return normalizeStory(payload, {
-        topic,
-        targetDurationMinutes,
-        level,
-        annotationStyle,
-        outline,
-        source: "llm"
-      });
-    } catch (error) {
-      const story = fallbackStoryFromOutline(outline || fallbackOutline(topic, targetDurationMinutes), {
-        topic,
-        targetDurationMinutes,
-        level,
-        annotationStyle
-      });
-      story.generationWarning = `LLM story failed: ${error.message}`;
-      return story;
-    }
+async function createPureStory({ topic, targetDurationMinutes, level, annotationStyle, outline, template = null }) {
+  const config = await getLlmConfig();
+  if (!config.apiKey) {
+    throw new Error("LLM API key is required for story script generation. Open Settings and save an LLM API key.");
   }
 
-  return fallbackStoryFromOutline(outline || fallbackOutline(topic, targetDurationMinutes), {
+  const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline, template), 22000);
+  return normalizeStory(payload, {
     topic,
     targetDurationMinutes,
     level,
-    annotationStyle
+    annotationStyle,
+    outline,
+    template,
+    source: "llm"
   });
 }
 
-function buildStoryPrompt(topic, minutes, outline) {
+async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback, template = null }) {
+  const config = await getLlmConfig();
+  if (!config.apiKey) {
+    throw new Error("LLM API key is required for draft revision. Open Settings and save an LLM API key.");
+  }
+  if (!draft || typeof draft !== "object") {
+    throw new Error("A current story draft is required before revision.");
+  }
+
+  const factualMode = isFactualTemplate(template) || draft.contentMode === "factual-documentary" || draft.outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
+  const prompt = [
+    "Revise this English learning video story draft according to the user's feedback.",
+    "Return the complete revised source JSON, not a patch.",
+    template ? formatTemplateForPrompt(template) : "",
+    "Hard requirements:",
+    "- Target exactly 15 minutes.",
+    "- Use 28-30 internal scenes.",
+    "- Each scene has exactly 4 English sentences.",
+    "- This creates 112-120 sentence-level background images.",
+    "- Keep beginner English, Chinese sentence translations, 3 vocabulary notes, and photorealistic image prompts.",
+    factualMode ? "- Factual documentary mode: do not invent fictional protagonists, employees, dialogue, or unsupported private scenes." : "",
+    `Topic: ${topic}`,
+    `User feedback:\n${cleanText(feedback) || "Improve clarity and accuracy."}`,
+    `Current draft JSON:\n${JSON.stringify(draft)}`
+  ].filter(Boolean).join("\n");
+
+  const payload = await callChatJson(config, prompt, 22000);
+  return normalizeStory(payload, {
+    topic,
+    targetDurationMinutes,
+    level: draft.level || "beginner",
+    annotationStyle: draft.annotationStyle || "zh-brief",
+    outline: draft.outline || payload,
+    template: template || draft.template || draft.outline?.template || null,
+    source: "llm-revised"
+  });
+}
+
+function buildStoryPrompt(topic, minutes, outline, template = null) {
+  const factualMode = isFactualTemplate(template) || outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
   return [
     "Write the complete source JSON for a pure English story narration video.",
+    template ? formatTemplateForPrompt(template) : "",
     "Important rules:",
     "- Pure story mode only. Do not include Part, Chapter, Listen, Shadow, Review, teaching instructions, or repeated rounds.",
     "- The English narration must be continuous story prose in short beginner-friendly sentences.",
-    "- Use 24-34 internal scenes. Each scene has 4-6 English sentences.",
-    "- The story should naturally last about 15-20 minutes when read slowly with short pauses.",
+    "- Use 28-30 internal scenes. Each scene has exactly 4 English sentences.",
+    "- The story should naturally last about 15 minutes when read slowly with short pauses.",
+    "- The video needs 112-120 sentence-level background images, so every sentence must describe a visually useful moment.",
     "- Every scene needs Chinese sentence translations, 3 vocabulary notes, and a photorealistic image prompt.",
     "- Image prompts must describe a real photographed/cinematic background, no text, no subtitles, no logo, no UI.",
+    factualMode
+      ? "- Factual documentary mode is required. Do not create fictional protagonists, invented employees, invented dialogue, private emotions, or scenes that are not supported by the outline/search context."
+      : "- Fictional story mode is allowed only when the topic is not about real history, companies, people, or products.",
+    factualMode
+      ? "- Use a chronological timeline with real milestones, dates, public events, product names, factories, deliveries, and public leaders from the search context. Keep it simple for English learners, but factual."
+      : "",
+    factualMode
+      ? "- The narration can be warm and story-like, but it must read like a documentary history, not a made-up workplace story."
+      : "",
     "Return only valid JSON with this shape:",
     "{",
     '  "title": "string",',
@@ -96,8 +132,9 @@ function buildStoryPrompt(topic, minutes, outline) {
     "}",
     `Topic: ${topic}`,
     `Target minutes: ${minutes}`,
-    `Confirmed outline: ${JSON.stringify(outline || fallbackOutline(topic, minutes))}`
-  ].join("\n");
+    `Confirmed outline: ${JSON.stringify(outline || fallbackOutline(topic, minutes, template))}`,
+    `Web search context:\n${formatSearchContext(outline?.searchContext)}`
+  ].filter(Boolean).join("\n");
 }
 
 async function callChatJson(config, prompt, maxTokens) {
@@ -123,7 +160,7 @@ async function callChatJson(config, prompt, maxTokens) {
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`LLM returned HTTP ${response.status}.`);
+    throw new Error(formatLlmHttpError(response.status, data));
   }
 
   const text = data?.choices?.[0]?.message?.content;
@@ -131,6 +168,22 @@ async function callChatJson(config, prompt, maxTokens) {
     throw new Error("LLM response did not include message content.");
   }
   return parseJsonText(text);
+}
+
+function formatLlmHttpError(status, payload) {
+  const message = payload?.error?.message
+    || payload?.message
+    || payload?.error_msg
+    || payload?.msg
+    || "";
+  const code = payload?.error?.code || payload?.code || "";
+  const requestId = payload?.request_id || payload?.requestId || payload?.id || "";
+  return [
+    `LLM returned HTTP ${status}`,
+    code ? `code=${code}` : "",
+    message ? `message=${message}` : "",
+    requestId ? `requestId=${requestId}` : ""
+  ].filter(Boolean).join(". ");
 }
 
 function parseJsonText(text) {
@@ -148,14 +201,15 @@ function parseJsonText(text) {
   }
 }
 
-function normalizeOutline(input, topic, minutes, source = "local") {
-  const fallback = fallbackOutline(topic, minutes);
+function normalizeOutline(input, topic, minutes, source = "local", searchContext = null, template = null) {
+  const fallback = fallbackOutline(topic, minutes, template);
   const title = cleanText(input?.title) || fallback.title;
   const beats = normalizeStringArray(input?.storyBeats, fallback.storyBeats).slice(0, 14);
   return {
     title,
     genre: cleanText(input?.genre) || fallback.genre,
     level: "beginner",
+    contentMode: cleanContentMode(input?.contentMode, topic, template),
     summary: cleanText(input?.summary) || fallback.summary,
     mainCharacter: cleanText(input?.mainCharacter) || fallback.mainCharacter,
     setting: cleanText(input?.setting) || fallback.setting,
@@ -163,18 +217,21 @@ function normalizeOutline(input, topic, minutes, source = "local") {
     storyBeats: beats.length >= 6 ? beats : fallback.storyBeats,
     vocabularyFocus: normalizeStringArray(input?.vocabularyFocus, fallback.vocabularyFocus).slice(0, 12),
     targetMinutes: Number(minutes || 15),
-    source
+    source,
+    searchContext: searchContext || input?.searchContext || null,
+    template: template || input?.template || null
   };
 }
 
 function normalizeStory(input, context) {
-  const outline = normalizeOutline(context.outline || input, context.topic, context.targetDurationMinutes, context.source);
+  const outline = normalizeOutline(context.outline || input, context.topic, context.targetDurationMinutes, context.source, null, context.template);
   const sections = Array.isArray(input?.sections) ? input.sections : [];
   const normalizedSections = sections
     .map((section, index) => normalizeSection(section, index, input?.title || outline.title))
-    .filter((section) => section.sentences.length && section.translations.length === section.sentences.length);
+    .filter((section) => section.sentences.length === 4 && section.translations.length === section.sentences.length)
+    .slice(0, 30);
 
-  if (normalizedSections.length < 12) {
+  if (normalizedSections.length < 28) {
     return fallbackStoryFromOutline(outline, context);
   }
 
@@ -190,6 +247,8 @@ function normalizeStory(input, context) {
     generatedAt: new Date().toISOString(),
     defaults: pureStoryDefaults(),
     summary: cleanText(input?.summary) || outline.summary,
+    contentMode: outline.contentMode,
+    template: context.template || outline.template || input?.template || null,
     outline,
     storyboardDesign: {
       visualStyle: cleanText(input?.storyboardDesign?.visualStyle) || outline.visualStyle,
@@ -204,7 +263,7 @@ function normalizeStory(input, context) {
 }
 
 function normalizeSection(section, index, storyTitle) {
-  const sentences = normalizeStringArray(section?.sentences, []).map(cleanSentence).filter(Boolean).slice(0, 7);
+  const sentences = normalizeStringArray(section?.sentences, []).map(cleanSentence).filter(Boolean).slice(0, 4);
   const translations = normalizeStringArray(section?.translations, []).slice(0, sentences.length);
   const vocabulary = Array.isArray(section?.vocabulary)
     ? section.vocabulary.map((pair) => [cleanText(pair?.[0]), cleanText(pair?.[1])]).filter(([word, zh]) => word && zh).slice(0, 4)
@@ -214,8 +273,8 @@ function normalizeSection(section, index, storyTitle) {
     title: cleanText(section?.title) || `Scene ${index + 1}`,
     baseSectionIndex: index,
     imageVariantIndex: 0,
-    imageBeatSize: 3,
-    imageBeatCount: Math.max(1, Math.ceil(sentences.length / 3)),
+    imageBeatSize: 1,
+    imageBeatCount: Math.max(1, sentences.length),
     visual,
     imagePrompt: cleanText(section?.imagePrompt) || buildPhotoPrompt(storyTitle, visual, sentences),
     sentences,
@@ -225,8 +284,8 @@ function normalizeSection(section, index, storyTitle) {
 }
 
 function fallbackStoryFromOutline(outlineInput, context) {
-  const outline = normalizeOutline(outlineInput, context.topic, context.targetDurationMinutes, "local");
-  const targetScenes = context.targetDurationMinutes >= 18 ? 36 : 32;
+  const outline = normalizeOutline(outlineInput, context.topic, context.targetDurationMinutes, "local", null, context.template);
+  const targetScenes = 29;
   const sections = [];
   for (let index = 0; index < targetScenes; index += 1) {
     const beat = outline.storyBeats[index % outline.storyBeats.length];
@@ -247,6 +306,8 @@ function fallbackStoryFromOutline(outlineInput, context) {
     generatedAt: new Date().toISOString(),
     defaults: pureStoryDefaults(),
     summary: outline.summary,
+    contentMode: outline.contentMode,
+    template: context.template || outline.template || null,
     outline,
     storyboardDesign: {
       visualStyle: outline.visualStyle,
@@ -261,6 +322,9 @@ function fallbackStoryFromOutline(outlineInput, context) {
 }
 
 function fallbackScene(outline, beat, nextBeat, index) {
+  if (outline.contentMode === "factual-documentary") {
+    return fallbackFactualScene(outline, beat, nextBeat, index);
+  }
   const name = outline.mainCharacter || "Emma";
   const place = outline.setting || "a quiet city street";
   const object = outline.vocabularyFocus[index % outline.vocabularyFocus.length] || "small clue";
@@ -268,25 +332,21 @@ function fallbackScene(outline, beat, nextBeat, index) {
     `${name} moved through ${place} and noticed something new.`,
     `The moment felt simple, but it held a quiet question.`,
     `${name} looked at ${articleFor(object)} ${object} and tried to understand it.`,
-    `The thought connected with the next event: ${cleanSentence(beat)}`,
-    `Before moving on, ${name} remembered one useful detail.`,
-    `That detail would matter when ${cleanSentence(nextBeat).toLowerCase()}`
+    `The thought connected with the next event: ${cleanSentence(beat)}`
   ];
   const translations = [
     `${name}穿过${place}，注意到了一些新的东西。`,
     `这一刻看起来简单，却藏着一个安静的问题。`,
     `${name}看着${object}，试着理解它。`,
-    `这个想法和故事的这一段有关：${beat}`,
-    `继续前进之前，${name}记住了一个有用的细节。`,
-    `当下一步发生时，这个细节会变得重要。`
+    `这个想法和故事的这一段有关：${beat}`
   ];
   const visual = `${name} in ${place}, reacting to ${object}, ${outline.visualStyle}, emotionally clear story moment`;
   return {
     title: `Scene ${index + 1}`,
     baseSectionIndex: index,
     imageVariantIndex: 0,
-    imageBeatSize: 3,
-    imageBeatCount: Math.ceil(sentences.length / 3),
+    imageBeatSize: 1,
+    imageBeatCount: sentences.length,
     visual,
     imagePrompt: buildPhotoPrompt(outline.title, visual, sentences),
     sentences,
@@ -295,34 +355,92 @@ function fallbackScene(outline, beat, nextBeat, index) {
   };
 }
 
-function fallbackOutline(topic, minutes) {
+function fallbackFactualScene(outline, beat, nextBeat, index) {
+  const subject = outline.title;
+  const sentences = [
+    `${subject} reached an important public milestone in this part of the timeline.`,
+    `The milestone showed how a plan became more concrete and visible.`,
+    `Public reports connected this moment with a larger business decision.`,
+    `The next step was also important: ${cleanSentence(nextBeat)}`
+  ];
+  const translations = [
+    `${subject}在这段时间线中到达了一个重要的公开里程碑。`,
+    `这个里程碑显示了一个计划如何变得更加具体和清晰。`,
+    `公开信息把这一刻和更大的商业决定联系起来。`,
+    `下一步同样重要：${nextBeat}`
+  ];
+  const visual = `${subject}, factual documentary scene about ${beat}, public event or realistic industry setting, ${outline.visualStyle}`;
+  return {
+    title: `Scene ${index + 1}`,
+    baseSectionIndex: index,
+    imageVariantIndex: 0,
+    imageBeatSize: 1,
+    imageBeatCount: sentences.length,
+    visual,
+    imagePrompt: buildPhotoPrompt(outline.title, visual, sentences),
+    sentences,
+    translations,
+    vocabulary: fallbackVocabulary(`${beat} ${nextBeat}`)
+  };
+}
+
+function fallbackOutline(topic, minutes, template = null) {
   const title = titleCase(topic || "A Quiet Story");
+  const factualMode = isFactualTemplate(template) || isFactualHistoryTopic(topic);
   return {
     title,
-    genre: "cinematic slice-of-life story",
+    genre: factualMode ? "factual documentary history" : cleanText(template?.title) || "cinematic slice-of-life story",
     level: "beginner",
-    summary: `${title} follows one clear character through a simple problem, a meaningful choice, and a calm ending. The story is written for English learners who need natural, easy sentences.`,
-    mainCharacter: "Emma",
-    setting: chooseSetting(title),
-    visualStyle: "photorealistic cinematic still photo, natural light, realistic people, clear story emotion",
+    contentMode: factualMode ? "factual-documentary" : "fictional-story",
+    summary: factualMode
+      ? `${title} is told as a simple factual documentary timeline for English learners. It focuses on public milestones, dates, decisions, products, and outcomes.`
+      : `${title} follows one clear character through a simple problem, a meaningful choice, and a calm ending. The story is written for English learners who need natural, easy sentences.`,
+    mainCharacter: factualMode ? "The company and its public leadership" : "Emma",
+    setting: factualMode ? "public events, offices, factories, and launch stages" : chooseSetting(title),
+    visualStyle: cleanText(template?.visualStyle) || "photorealistic cinematic still photo, natural light, realistic people, clear story emotion",
     storyBeats: [
-      "The main character notices an unusual detail.",
-      "A small question appears in an ordinary place.",
-      "The character follows the first clue carefully.",
-      "A helpful person shares a simple idea.",
-      "The weather or setting changes the plan.",
-      "The character makes a careful choice.",
-      "A hidden meaning becomes easier to see.",
-      "The problem grows for a short time.",
-      "The character remembers a kind lesson.",
-      "The answer appears in a quiet moment.",
-      "The character helps someone else.",
-      "The day ends with a gentle change."
+      factualMode ? "The public plan is announced with a clear date." : "The main character notices an unusual detail.",
+      factualMode ? "A new business unit or project team is formed." : "A small question appears in an ordinary place.",
+      factualMode ? "The company invests resources and begins research and development." : "The character follows the first clue carefully.",
+      factualMode ? "The first technology or product preview is shown to the public." : "A helpful person shares a simple idea.",
+      factualMode ? "The factory or production plan becomes visible." : "The weather or setting changes the plan.",
+      factualMode ? "The first product is officially launched." : "The character makes a careful choice.",
+      factualMode ? "Early orders, deliveries, or public reactions show market interest." : "A hidden meaning becomes easier to see.",
+      factualMode ? "The company expands the roadmap and prepares the next milestone." : "The problem grows for a short time.",
+      factualMode ? "The story closes with the project becoming part of a larger strategy." : "The character remembers a kind lesson."
     ],
-    vocabularyFocus: ["notice", "carefully", "choice", "clue", "quiet", "remember", "helpful", "change", "answer", "meaning"],
+    vocabularyFocus: Array.isArray(template?.vocabularyFocus) ? template.vocabularyFocus : ["notice", "carefully", "choice", "clue", "quiet", "remember", "helpful", "change", "answer", "meaning"],
     targetMinutes: Number(minutes || 15),
     source: "local"
   };
+}
+
+function isFactualHistoryTopic(topic) {
+  return /\b(history|development|timeline|startup|company|founder|founded|launch|launched|auto|automobile|car|ev|xiaomi|tesla|apple|microsoft|google|huawei|byd|nio|xpeng)\b/i.test(String(topic || ""));
+}
+
+function isFactualTemplate(template) {
+  return cleanText(template?.contentMode) === "factual-documentary";
+}
+
+function cleanContentMode(value, topic, template = null) {
+  const text = cleanText(value).toLowerCase();
+  if (text === "factual-documentary" || text === "fictional-story") return text;
+  if (isFactualTemplate(template)) return "factual-documentary";
+  return isFactualHistoryTopic(topic) ? "factual-documentary" : "fictional-story";
+}
+
+function formatTemplateForPrompt(template) {
+  return [
+    "Video type template:",
+    `- Name: ${cleanText(template.title)}`,
+    `- Content mode: ${cleanText(template.contentMode)}`,
+    `- Summary: ${cleanText(template.summary)}`,
+    `- Structure rules: ${cleanText(template.structureRules)}`,
+    `- Visual style: ${cleanText(template.visualStyle)}`,
+    `- Vocabulary focus: ${(template.vocabularyFocus || []).join(", ")}`,
+    `- Draft guidance: ${cleanText(template.draftGuidance)}`
+  ].filter(Boolean).join("\n");
 }
 
 function buildPhotoPrompt(storyTitle, visual, sentences = []) {
@@ -356,12 +474,28 @@ function fallbackVocabulary(text) {
     : [["notice", "注意到"], ["choice", "选择"], ["carefully", "小心地"]];
 }
 
-function getLlmConfig() {
+async function getLlmConfig() {
+  const settings = await getEffectiveSettings();
+  if (settings.provider === "xiaomi" && settings.xiaomi?.apiKey) {
+    return {
+      baseUrl: settings.xiaomi.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
+      model: settings.xiaomi.textModel || "MiMo-V2.5-Pro",
+      apiKey: settings.xiaomi.apiKey
+    };
+  }
   return {
-    baseUrl: process.env.LLM_API_BASE || DEFAULT_LLM_BASE,
-    model: process.env.STRIX_LLM || DEFAULT_LLM_MODEL,
-    apiKey: process.env.LLM_API_KEY || ""
+    baseUrl: settings.llm.baseUrl || DEFAULT_LLM.baseUrl,
+    model: normalizeProviderModel(settings.llm.model || DEFAULT_LLM.model, settings.llm.baseUrl || DEFAULT_LLM.baseUrl),
+    apiKey: settings.llm.apiKey || ""
   };
+}
+
+function normalizeProviderModel(model, baseUrl) {
+  const text = String(model || "").trim();
+  if (/dashscope\.aliyuncs\.com/i.test(String(baseUrl || "")) && text.startsWith("openai/")) {
+    return text.slice("openai/".length);
+  }
+  return text || DEFAULT_LLM.model;
 }
 
 function pureStoryDefaults() {
@@ -414,5 +548,6 @@ function articleFor(word) {
 module.exports = {
   createPureStory,
   createStoryOutline,
+  reviseStoryDraft,
   getLlmConfig
 };

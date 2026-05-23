@@ -7,16 +7,16 @@ const { ensureDir, pathExists } = require("./utils");
 const { initAudioManifest, updateAudioManifest } = require("./outputManifests");
 
 const execFileAsync = promisify(execFile);
-const API_URL = "https://api.minimaxi.com/v1/t2a_v2";
 
-async function createAudio({ readingItems, outputDir, apiKey, model, englishVoice, chineseVoice, speed, requestIntervalMs, logs = [] }) {
+async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, voice, speed, requestIntervalMs, logs = [] }) {
   if (!apiKey) {
-    throw new Error("MINIMAX_API_KEY is required for MiniMax TTS.");
+    throw new Error("XIAOMI_API_KEY is required for Xiaomi TTS.");
   }
 
   await assertCommand("ffmpeg", ["-version"]);
   await assertCommand("ffprobe", ["-version"]);
 
+  const apiUrl = `${(baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1").replace(/\/$/, "")}/audio/speech`;
   const workDir = path.join(outputDir, "audio-work");
   await ensureDir(workDir);
   const cacheDir = path.join(path.dirname(outputDir), ".tts-cache");
@@ -30,7 +30,7 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
   let cacheHitCount = 0;
   const minimumRequestIntervalMs = Number.isFinite(Number(requestIntervalMs))
     ? Math.max(0, Number(requestIntervalMs))
-    : Number(process.env.MINIMAX_TTS_MIN_INTERVAL_MS || 3500);
+    : 3500;
 
   const total = readingItems.length;
   await initAudioManifest(outputDir, readingItems);
@@ -40,9 +40,7 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
     const speechText = item.ttsText || item.text;
 
     const baseName = String(index + 1).padStart(4, "0");
-    const voice = item.language === "zh" ? chineseVoice : englishVoice;
-    const languageBoost = item.language === "zh" ? "Chinese" : "English";
-    const cacheKey = createCacheKey({ model, voice, text: speechText, speed, languageBoost });
+    const cacheKey = createCacheKey({ model, voice, text: speechText, speed });
     const wavPath = path.join(cacheDir, `${cacheKey}.wav`);
     await updateAudioManifest(outputDir, item.id, {
       status: "running",
@@ -62,13 +60,13 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
         apiRequestCount += 1;
 
         const mp3Path = path.join(workDir, `${baseName}-${cacheKey}.mp3`);
-        const audioBytes = await synthesizeMiniMax({
+        const audioBytes = await synthesizeXiaomi({
+          apiUrl,
           apiKey,
           model,
           voice,
           text: speechText,
-          speed,
-          languageBoost
+          speed
         });
 
         await fs.writeFile(mp3Path, audioBytes);
@@ -94,9 +92,8 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
         path: wavPath,
         error: `Duration could not be read for ${item.id}.`
       });
-      throw new Error(`MiniMax returned audio but duration could not be read for ${item.id}.`);
+      throw new Error(`Xiaomi returned audio but duration could not be read for ${item.id}.`);
     }
-
     await updateAudioManifest(outputDir, item.id, {
       status: "completed",
       cacheKey,
@@ -135,10 +132,9 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
   });
 
   return {
-    provider: "minimax",
+    provider: "xiaomi",
     audioPath,
-    englishVoice,
-    chineseVoice,
+    voice,
     model,
     durationSeconds: cursor,
     fallbackCount: 0,
@@ -151,10 +147,10 @@ async function getCachedDuration(wavPath) {
   return getDurationSeconds(wavPath).catch(() => null);
 }
 
-function createCacheKey({ model, voice, text, speed, languageBoost }) {
+function createCacheKey({ model, voice, text, speed }) {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify({ model, voice, text, speed, languageBoost }))
+    .update(JSON.stringify({ model, voice, text, speed }))
     .digest("hex");
 }
 
@@ -165,30 +161,16 @@ async function waitForRequestSlot(lastRequestAt, minimumRequestIntervalMs) {
   if (waitMs > 0) await delay(waitMs);
 }
 
-async function synthesizeMiniMax({ apiKey, model, voice, text, speed, languageBoost }) {
+async function synthesizeXiaomi({ apiUrl, apiKey, model, voice, text, speed }) {
   const body = {
     model,
-    text,
-    stream: false,
-    output_format: "hex",
-    language_boost: languageBoost,
-    voice_setting: {
-      voice_id: voice,
-      speed,
-      vol: 1,
-      pitch: 0
-    },
-    audio_setting: {
-      sample_rate: 32000,
-      bitrate: 128000,
-      format: "mp3",
-      channel: 1
-    },
-    subtitle_enable: false,
-    aigc_watermark: false
+    input: text,
+    voice: voice || "alloy",
+    response_format: "mp3",
+    speed: speed || 1.0
   };
 
-  const payload = await fetchWithRetry(API_URL, {
+  const audioBytes = await fetchWithRetry(apiUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -197,12 +179,7 @@ async function synthesizeMiniMax({ apiKey, model, voice, text, speed, languageBo
     body: JSON.stringify(body)
   });
 
-  const hexAudio = payload?.data?.audio;
-  if (!hexAudio || typeof hexAudio !== "string") {
-    throw new Error("MiniMax TTS response did not include hex audio data.");
-  }
-
-  return Buffer.from(hexAudio, "hex");
+  return audioBytes;
 }
 
 async function fetchWithRetry(url, options) {
@@ -214,25 +191,14 @@ async function fetchWithRetry(url, options) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const payload = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(`MiniMax request failed with HTTP ${response.status}.`);
+        const errorText = await response.text().catch(() => "");
+        throw new Error(formatXiaomiTtsError(response.status, errorText, url));
       }
 
-      const statusCode = payload?.base_resp?.status_code;
-      if (statusCode !== 0 && statusCode !== undefined) {
-        const statusMsg = payload?.base_resp?.status_msg || "unknown error";
-        if (statusMsg.toLowerCase().includes("rate limit") || statusCode === 1004 || statusCode === 104) {
-          throw new Error(`Rate limit hit: ${statusMsg}`);
-        }
-        const err = new Error(`MiniMax API failed: ${statusMsg}`);
-        err.isFinal = true;
-        throw err;
-      }
-
-      return payload;
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
     } catch (error) {
-      if (error.isFinal) throw error;
       lastError = error;
     }
 
@@ -240,6 +206,17 @@ async function fetchWithRetry(url, options) {
   }
 
   throw lastError;
+}
+
+function formatXiaomiTtsError(status, errorText, url) {
+  const compact = String(errorText || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (status === 404) {
+    return `Xiaomi TTS endpoint not found at ${url}. The current MiMo endpoint exposes text models, so narration will use MiniMax fallback.`;
+  }
+  return `Xiaomi TTS request failed with HTTP ${status}${compact ? `: ${compact.slice(0, 160)}` : ""}`;
 }
 
 async function getSilenceFile(workDir, seconds) {

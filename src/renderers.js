@@ -119,12 +119,33 @@ function renderImagePrompts(story) {
   ];
 
   story.sections.forEach((section, index) => {
-    const sceneNumber = String(index + 1).padStart(3, "0");
-    lines.push(`## scene-${sceneNumber} - ${section.title}`, "");
-    lines.push(section.imagePrompt, "");
+    const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
+    const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
+    const beatCount = Number.isInteger(section.imageBeatCount) ? section.imageBeatCount : 1;
+    for (let beatIndex = 0; beatIndex < beatCount; beatIndex += 1) {
+      const sceneId = buildPromptSceneImageId(baseIndex, variantIndex, beatIndex);
+      lines.push(`## ${sceneId} - ${section.title}`, "");
+      lines.push(buildPromptBeatImagePrompt(story, section, beatIndex), "");
+    }
   });
 
   return `${lines.join("\n")}\n`;
+}
+
+function buildPromptSceneImageId(baseIndex, variantIndex, beatIndex) {
+  const suffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
+  return `scene-${String(baseIndex + 1).padStart(3, "0")}-${suffix}-${String(beatIndex + 1).padStart(2, "0")}`;
+}
+
+function buildPromptBeatImagePrompt(story, section, beatIndex) {
+  const sentences = section.sentences || [];
+  const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story.mode === "pure-story" ? 1 : 2;
+  const moment = sentences.slice(beatIndex * beatSize, beatIndex * beatSize + beatSize).join(" ");
+  return [
+    section.imagePrompt,
+    moment ? `Specific moment for this background: ${moment}` : "",
+    "Make this image visually distinct from the nearby sentence backgrounds."
+  ].filter(Boolean).join(" ");
 }
 
 function renderSrt(items) {

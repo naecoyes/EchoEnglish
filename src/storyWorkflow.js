@@ -1,15 +1,23 @@
+const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { promisify } = require("node:util");
 const { generateStory } = require("./storyGenerator");
 const { buildReadingItems, renderImagePrompts, renderMarkdown, renderSrt } = require("./renderers");
 const { createAudio: createLocalAudio } = require("./localTts");
 const { createAudio: createMiniMaxAudio } = require("./minimaxTts");
+const { createAudio: createXiaomiAudio } = require("./xiaomiTts");
+const { createAudio: createGoogleAudio } = require("./googleTts");
 const { composeStoryVideo } = require("./storyVideoComposer");
 const { generateImages } = require("./minimaxImage");
+const { generateImages: generateGoogleImages } = require("./googleImage");
 const { generateMusic } = require("./minimaxMusic");
 const { MINIMAX_TTS_MODEL, MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
 const { getEffectiveSettings } = require("./settingsStore");
-const { slugify, ensureDir } = require("./utils");
+const { slugify, ensureDir, pathExists } = require("./utils");
+const { classifyError } = require("./errorClassifier");
+
+const execFileAsync = promisify(execFile);
 
 async function generateStoryWorkflow(options = {}) {
   const topic = options.topic || "A Rainy Day";
@@ -29,7 +37,7 @@ async function generateStoryWorkflow(options = {}) {
   const effectiveApiKey = options.apiKey || settings.minimaxApiKey;
   const effectiveModels = settings.models || {};
 
-  const story = await generateStory({
+  const story = options.storyDraft || await generateStory({
     topic,
     targetDurationMinutes: minutes,
     level: "beginner",
@@ -37,16 +45,60 @@ async function generateStoryWorkflow(options = {}) {
     mode: options.storyMode || "lesson",
     outline: options.storyOutline || null
   });
+  if (options.template && !story.template) {
+    story.template = options.template;
+  }
+  if (options.storyDraft) {
+    await runStage(options, "draft", async () => ({
+      status: "completed",
+      counts: {
+        scenes: story.sections?.length || 0,
+        sentences: countSentences(story)
+      }
+    }));
+  }
 
   let readingItems = buildReadingItems(story);
   let audioSummary = null;
   let musicSummary = null;
 
   if (!options.skipAudio) {
-    const provider = resolveTtsProvider(options.ttsProvider, effectiveApiKey);
+    audioSummary = await runStage(options, "tts", async () => {
+    const provider = resolveTtsProvider(options.ttsProvider, effectiveApiKey, settings);
     pushLog(logs, `Generating audio with ${provider} TTS`);
-    audioSummary = provider === "minimax"
-      ? await createMiniMaxAudio({
+    if (provider === "xiaomi") {
+      try {
+        return await createXiaomiAudio({
+          readingItems,
+          outputDir,
+          apiKey: settings.xiaomi?.apiKey,
+          baseUrl: settings.xiaomi?.baseUrl,
+          model: settings.xiaomi?.ttsModel || "mimo-v2.5-tts",
+          voice: options.xiaomiVoice || "alloy",
+          speed: Number(options.speed || 1.0),
+          requestIntervalMs: options.ttsRequestIntervalMs,
+          logs
+        });
+      } catch (error) {
+        if (!isRecoverableXiaomiTtsError(error)) throw error;
+        pushLog(logs, `Xiaomi TTS unavailable: ${cleanErrorMessage(error.message)}`);
+        pushLog(logs, "Falling back to MiniMax TTS for narration.");
+        const fallbackSummary = await createMiniMaxNarration({
+          readingItems,
+          outputDir,
+          apiKey: effectiveApiKey,
+          model: options.minimaxModel || effectiveModels.tts || MINIMAX_TTS_MODEL,
+          englishVoice: options.minimaxVoice || "English_Graceful_Lady",
+          chineseVoice: options.minimaxCnVoice || "Chinese (Mandarin)_Sweet_Lady",
+          speed: Number(options.speed || 0.92),
+          requestIntervalMs: options.ttsRequestIntervalMs,
+          logs
+        });
+        fallbackSummary.provider = "minimax-fallback";
+        return fallbackSummary;
+      }
+    } else if (provider === "minimax") {
+      return await createMiniMaxNarration({
         readingItems,
         outputDir,
         apiKey: effectiveApiKey,
@@ -56,31 +108,47 @@ async function generateStoryWorkflow(options = {}) {
         speed: Number(options.speed || 0.92),
         requestIntervalMs: options.ttsRequestIntervalMs,
         logs
-      })
-      : await createLocalAudio({
+      });
+    } else if (provider === "google") {
+      return await createGoogleAudio({
         readingItems,
         outputDir,
-        englishVoice: options.voice,
-        chineseVoice: options.cnVoice,
-        englishRate: Number(options.rate || 150),
+        apiKey: settings.google?.apiKey,
+        baseUrl: settings.google?.baseUrl,
+        model: settings.google?.ttsModel,
+        voice: settings.google?.voice,
+        requestIntervalMs: options.ttsRequestIntervalMs,
         logs
       });
+    }
+    return await createLocalAudio({
+      readingItems,
+      outputDir,
+      englishVoice: options.voice,
+      chineseVoice: options.cnVoice,
+      englishRate: Number(options.rate || 150),
+      logs
+    });
+    });
     readingItems = audioSummary.items;
   } else {
     pushLog(logs, "Skipping audio; estimating subtitle timings");
     readingItems = addEstimatedTimings(readingItems);
+    await notifyStage(options, "tts", "skipped", { counts: { completed: 0, total: readingItems.length } });
   }
 
-  const outputs = {
+  const scriptJson = await runStage(options, "script-assets", async () => {
+    const outputs = {
     markdown: "script.md",
     subtitles: "subtitles.srt",
     imagePrompts: "image-prompts.md",
     audio: options.skipAudio ? null : "audio.wav",
     music: !options.skipAudio && resolveMusicMode(options.musicMode) === "minimax" ? "music/background.mp3" : null,
-    video: options.skipAudio ? null : "final.mp4"
+    video: options.skipAudio ? null : "final.mp4",
+    qualityReport: "quality-report.json"
   };
 
-  const scriptJson = {
+    const nextScriptJson = {
     ...story,
     readingOrder: readingItems.map(({ id, kind, text, ttsText, language, pauseAfterSeconds, startSeconds, endSeconds, sectionIndex, sentenceIndex, vocabularyIndex, word, translation }) => ({
       id,
@@ -100,45 +168,77 @@ async function generateStoryWorkflow(options = {}) {
     outputs
   };
 
-  await fs.writeFile(path.join(outputDir, "script.json"), `${JSON.stringify(scriptJson, null, 2)}\n`);
-  await fs.writeFile(path.join(outputDir, "script.md"), renderMarkdown(story), "utf8");
-  await fs.writeFile(path.join(outputDir, "image-prompts.md"), renderImagePrompts(story), "utf8");
-  await fs.writeFile(path.join(outputDir, "subtitles.srt"), renderSrt(readingItems), "utf8");
+    await fs.writeFile(path.join(outputDir, "script.json"), `${JSON.stringify(nextScriptJson, null, 2)}\n`);
+    await fs.writeFile(path.join(outputDir, "script.md"), renderMarkdown(story), "utf8");
+    await fs.writeFile(path.join(outputDir, "image-prompts.md"), renderImagePrompts(story), "utf8");
+    await fs.writeFile(path.join(outputDir, "subtitles.srt"), renderSrt(readingItems), "utf8");
+    return nextScriptJson;
+  });
 
-  if (options.imageMode === "minimax") {
-    pushLog(logs, "Generating scene images with MiniMax");
+  if (options.imageMode === "minimax" || options.imageMode === "google") {
+    await runStage(options, "images", async () => {
+    const imageProviderName = options.imageMode === "google" ? "Google Imagen" : "MiniMax";
+    pushLog(logs, `Generating scene images with ${imageProviderName}`);
     const scenes = getUniqueImageScenes(story);
     pushLog(logs, `Image API requests: ${scenes.length}; reused across ${story.sections.length} story sections.`);
-    await generateImages({
-      scenes,
-      outputDir,
-      apiKey: effectiveApiKey,
-      model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
-      aspectRatio: "16:9",
-      promptOptimizer: true
+    const results = options.imageMode === "google"
+      ? await generateGoogleImages({
+        scenes,
+        outputDir,
+        apiKey: settings.google?.apiKey,
+        baseUrl: settings.google?.baseUrl,
+        model: options.googleImageModel || settings.google?.imageModel
+      })
+      : await generateImages({
+        scenes,
+        outputDir,
+        apiKey: effectiveApiKey,
+        model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
+        aspectRatio: "16:9",
+        promptOptimizer: true
+      });
+    return {
+      status: "completed",
+      counts: {
+        completed: results.length,
+        total: scenes.length
+      }
+    };
     });
+  } else {
+    await notifyStage(options, "images", "skipped", { counts: { completed: 0, total: 0 } });
   }
 
   if (!options.skipAudio && resolveMusicMode(options.musicMode) === "minimax") {
-    pushLog(logs, "Generating background music with MiniMax");
-    try {
-      musicSummary = await generateMusic({
-        outputDir,
-        apiKey: effectiveApiKey,
-        model: options.musicModel || effectiveModels.music || MINIMAX_MUSIC_MODEL,
-        prompt: options.musicPrompt || buildMusicPrompt(story)
-      });
-      pushLog(logs, "Background music ready: music/background.mp3");
-    } catch (error) {
-      pushLog(logs, `Background music skipped: ${error.message}`);
-      musicSummary = null;
-    }
+    await runStage(options, "music", async () => {
+    const musicCount = Number(options.musicCount || settings.minimax?.musicTrackCount || 3);
+    pushLog(logs, `Generating ${musicCount} background music tracks with MiniMax`);
+    musicSummary = await generateMusic({
+      outputDir,
+      apiKey: effectiveApiKey,
+      model: options.musicModel || effectiveModels.music || MINIMAX_MUSIC_MODEL,
+      prompt: options.musicPrompt || buildMusicPrompt(story),
+      count: musicCount
+    });
+    pushLog(logs, "Background music ready: music/background.mp3");
+    return {
+      status: musicSummary ? "completed" : "skipped",
+      counts: {
+        completed: Array.isArray(musicSummary?.tracks) ? musicSummary.tracks.length : 0,
+        total: musicCount
+      }
+    };
+    });
+  } else {
+    await notifyStage(options, "music", "skipped", { counts: { completed: 0, total: 0 } });
   }
 
   let videoSummary = null;
   if (!options.skipAudio) {
+    videoSummary = await runStage(options, "compose", async () => {
+    await assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options });
     pushLog(logs, "Composing final MP4");
-    videoSummary = await composeStoryVideo({
+    return await composeStoryVideo({
       story,
       readingItems,
       outputDir,
@@ -148,9 +248,26 @@ async function generateStoryWorkflow(options = {}) {
       imageMode: options.imageMode || "local",
       logs
     });
+    });
+  } else {
+    await notifyStage(options, "compose", "skipped", { counts: { completed: 0, total: 0 } });
   }
 
   const duration = readingItems.length ? readingItems[readingItems.length - 1].endSeconds : 0;
+  const qualityReport = await runStage(options, "quality", async () => {
+    const report = await writeQualityReport({
+    outputDir,
+    story,
+    readingItems,
+    audioSummary,
+    musicSummary,
+    videoSummary,
+    expectedMusicTracks: Number(options.musicCount || settings.minimax?.musicTrackCount || 3),
+    skipAudio: options.skipAudio
+  });
+    return report;
+  });
+  pushLog(logs, "Quality report ready: quality-report.json");
   pushLog(logs, `Done: ${formatDuration(duration)}`);
 
   return {
@@ -161,6 +278,7 @@ async function generateStoryWorkflow(options = {}) {
     audioSummary,
     musicSummary,
     videoSummary,
+    qualityReport,
     files: {
       scriptJson: path.join(outputDir, "script.json"),
       scriptMd: path.join(outputDir, "script.md"),
@@ -168,9 +286,157 @@ async function generateStoryWorkflow(options = {}) {
       subtitles: path.join(outputDir, "subtitles.srt"),
       audio: options.skipAudio ? null : path.join(outputDir, "audio.wav"),
       music: musicSummary ? path.join(outputDir, "music", "background.mp3") : null,
-      video: options.skipAudio ? null : path.join(outputDir, "final.mp4")
+      video: options.skipAudio ? null : path.join(outputDir, "final.mp4"),
+      qualityReport: path.join(outputDir, "quality-report.json")
     }
   };
+}
+
+async function runStage(options, stageId, fn) {
+  await notifyStage(options, stageId, "running");
+  try {
+    const result = await fn();
+    if (result && typeof result === "object" && ["completed", "skipped"].includes(result.status)) {
+      const { status, ...patch } = result;
+      await notifyStage(options, stageId, status, patch);
+      return result;
+    }
+    await notifyStage(options, stageId, "completed", inferStagePatch(stageId, result));
+    return result;
+  } catch (error) {
+    const classification = classifyError(error);
+    await notifyStage(options, stageId, "failed", {
+      error: error.message,
+      errorType: classification.type,
+      recoverable: classification.recoverable
+    });
+    throw error;
+  }
+}
+
+async function notifyStage(options, stageId, status, patch = {}) {
+  if (typeof options.onStage === "function") {
+    await options.onStage(stageId, status, patch);
+  }
+}
+
+function inferStagePatch(stageId, result) {
+  if (stageId === "tts" && result?.items) {
+    return { counts: { completed: result.items.length, total: result.items.length } };
+  }
+  if (stageId === "compose" && result) {
+    return { counts: { completed: 1, total: 1 } };
+  }
+  if (stageId === "quality" && result?.counts) {
+    return { counts: result.counts };
+  }
+  return {};
+}
+
+async function assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options }) {
+  if (!audioSummary?.audioPath || !(await pathExists(audioSummary.audioPath))) {
+    throw new Error("Compose blocked: audio.wav is not ready.");
+  }
+  if (options.imageMode === "minimax" || options.imageMode === "google") {
+    const scenes = getUniqueImageScenes(story);
+    let completed = 0;
+    for (const scene of scenes) {
+      if (await findSceneImage(outputDir, scene.id)) completed += 1;
+    }
+    if (completed < scenes.length) {
+      throw new Error(`Compose blocked: scene images are incomplete (${completed}/${scenes.length}).`);
+    }
+  }
+  if (resolveMusicMode(options.musicMode) === "minimax" && musicSummary?.musicPath && !(await pathExists(musicSummary.musicPath))) {
+    throw new Error("Compose blocked: background music manifest points to a missing file.");
+  }
+}
+
+async function findSceneImage(outputDir, sceneId) {
+  const candidates = [".png", ".jpg", ".jpeg", ".webp"].map((ext) => path.join(outputDir, "images", `${sceneId}${ext}`));
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function writeQualityReport({ outputDir, story, readingItems, audioSummary, musicSummary, expectedMusicTracks, skipAudio }) {
+  const audioPath = audioSummary?.audioPath || path.join(outputDir, "audio.wav");
+  const videoPath = path.join(outputDir, "final.mp4");
+  const subtitleLastTimestamp = readingItems.length ? Number(readingItems[readingItems.length - 1].endSeconds || 0) : 0;
+  const imageCount = getUniqueImageScenes(story).length;
+  const musicTrackCount = Array.isArray(musicSummary?.tracks) ? musicSummary.tracks.length : musicSummary ? 1 : 0;
+  const audioDuration = skipAudio ? 0 : await probeDuration(audioPath);
+  const videoDuration = skipAudio ? 0 : await probeDuration(videoPath);
+  const warnings = [];
+
+  if (imageCount < 110 || imageCount > 120) {
+    warnings.push(`Image count ${imageCount} is outside the target range of 110-120.`);
+  }
+  if (!skipAudio && audioDuration && Math.abs(audioDuration - subtitleLastTimestamp) > 0.1) {
+    warnings.push(`Audio duration and subtitle timeline differ by ${Math.abs(audioDuration - subtitleLastTimestamp).toFixed(3)} seconds.`);
+  }
+  if (!skipAudio && videoDuration && audioDuration && Math.abs(videoDuration - audioDuration) > 0.1) {
+    warnings.push(`Video duration and audio duration differ by ${Math.abs(videoDuration - audioDuration).toFixed(3)} seconds.`);
+  }
+  if (!skipAudio && musicTrackCount < expectedMusicTracks) {
+    warnings.push(`Music generated ${musicTrackCount} tracks, expected ${expectedMusicTracks}.`);
+  }
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    title: story.title,
+    topic: story.topic,
+    factualMode: story.contentMode === "factual-documentary" || story.outline?.contentMode === "factual-documentary",
+    duration: {
+      readingOrderSeconds: roundSeconds(subtitleLastTimestamp),
+      audioSeconds: roundSeconds(audioDuration),
+      videoSeconds: roundSeconds(videoDuration),
+      subtitleLastTimestamp: roundSeconds(subtitleLastTimestamp)
+    },
+    counts: {
+      sections: story.sections?.length || 0,
+      sentences: countSentences(story),
+      images: imageCount,
+      musicTracks: musicTrackCount
+    },
+    targets: {
+      minutes: 15,
+      images: "110-120",
+      musicTracks: expectedMusicTracks
+    },
+    warnings
+  };
+  await fs.writeFile(path.join(outputDir, "quality-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return report;
+}
+
+async function probeDuration(file) {
+  try {
+    await fs.access(file);
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      file
+    ], { maxBuffer: 1024 * 1024 });
+    const seconds = Number(stdout.trim());
+    return Number.isFinite(seconds) ? seconds : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function countSentences(story) {
+  return (story.sections || []).reduce((total, section) => total + (section.sentences?.length || 0), 0);
+}
+
+function roundSeconds(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Number(number.toFixed(3)) : 0;
 }
 
 function getUniqueImageScenes(story) {
@@ -230,23 +496,61 @@ function resolveMusicMode(requestedMode) {
   return mode;
 }
 
-function resolveTtsProvider(requestedProvider, apiKey) {
+function resolveTtsProvider(requestedProvider, apiKey, settings = {}) {
   const provider = requestedProvider || "auto";
-  if (!["auto", "minimax", "local"].includes(provider)) {
-    throw new Error("--tts-provider must be one of: auto, minimax, local.");
+  if (!["auto", "minimax", "xiaomi", "google", "local"].includes(provider)) {
+    throw new Error("--tts-provider must be one of: auto, minimax, xiaomi, google, local.");
   }
 
-  const hasKey = Boolean(apiKey);
+  const hasMinimaxKey = Boolean(apiKey);
+  const hasXiaomiKey = Boolean(settings.xiaomi?.apiKey);
 
-  if (provider === "minimax" && !hasKey) {
+  if (provider === "minimax" && !hasMinimaxKey) {
     throw new Error("MINIMAX_API_KEY is required when --tts-provider minimax is used.");
   }
 
+  if (provider === "xiaomi" && !hasXiaomiKey) {
+    throw new Error("XIAOMI_API_KEY is required when --tts-provider xiaomi is used.");
+  }
+
+  if (provider === "google" && !settings.google?.apiKey) {
+    throw new Error("GOOGLE_API_KEY is required when --tts-provider google is used.");
+  }
+
   if (provider === "auto") {
-    return hasKey ? "minimax" : "local";
+    if (settings.provider === "xiaomi" && hasXiaomiKey) return "xiaomi";
+    if (settings.media?.ttsProvider === "google" && settings.google?.apiKey) return "google";
+    return hasMinimaxKey ? "minimax" : "local";
   }
 
   return provider;
+}
+
+async function createMiniMaxNarration({ readingItems, outputDir, apiKey, model, englishVoice, chineseVoice, speed, requestIntervalMs, logs }) {
+  return createMiniMaxAudio({
+    readingItems,
+    outputDir,
+    apiKey,
+    model,
+    englishVoice,
+    chineseVoice,
+    speed,
+    requestIntervalMs,
+    logs
+  });
+}
+
+function isRecoverableXiaomiTtsError(error) {
+  const message = String(error?.message || "");
+  return /HTTP 404|Not Found|audio\/speech|Xiaomi TTS request failed/i.test(message);
+}
+
+function cleanErrorMessage(message) {
+  return String(message || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
 }
 
 function addEstimatedTimings(items) {

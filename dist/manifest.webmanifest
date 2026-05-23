@@ -1,11 +1,11 @@
 {
-  "name": "English Story Video Generator",
-  "short_name": "Story Video",
-  "description": "Generate English story narration videos with captions, images, and music.",
+  "name": "EchoEnglish",
+  "short_name": "EchoEnglish",
+  "description": "Generate AI English shadowing videos with narration, scene images, captions, and music.",
   "start_url": "/generate",
   "display": "standalone",
-  "background_color": "#081827",
-  "theme_color": "#081827",
+  "background_color": "#eef6ff",
+  "theme_color": "#eef6ff",
   "orientation": "any",
   "icons": [
     {

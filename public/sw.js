@@ -1,4 +1,4 @@
-const CACHE_NAME = "story-video-shell-v1";
+const CACHE_NAME = "echoenglish-shell-v2";
 const SHELL = ["/generate", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
