@@ -78,7 +78,10 @@ function App() {
   const providerReady = config?.provider === "xiaomi"
     ? Boolean(config?.hasXiaomiKey)
     : Boolean(config?.hasMiniMaxKey);
-  const apiReady = Boolean(providerReady && config?.llm?.configured && config?.search?.configured);
+  const googleReady = (config?.media?.ttsProvider === "google" || config?.media?.imageProvider === "google")
+    ? Boolean(config?.hasGoogleKey)
+    : true;
+  const apiReady = Boolean(providerReady && googleReady && config?.llm?.configured && config?.search?.configured);
 
   useEffect(() => {
     refreshConfig();
@@ -452,8 +455,8 @@ function getActiveConfigBadges(config) {
     return [
       "Provider: Xiaomi MiMo",
       `Text: ${config?.xiaomi?.textModel || settings.xiaomi?.textModel || "mimo-v2.5-pro"}`,
-      `TTS: ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "mimo-v2.5-tts"} -> MiniMax fallback`,
-      `Image: ${settings.models?.image || "image-01"}`,
+      `TTS: ${formatTtsConfig(config, settings)}`,
+      `Image: ${formatImageConfig(config, settings)}`,
       `Music: ${settings.models?.music || "music-2.6"}`,
       "Search: Tavily"
     ];
@@ -461,11 +464,30 @@ function getActiveConfigBadges(config) {
   return [
     "Provider: MiniMax",
     `Text: ${config?.llm?.model || settings.llm?.model || settings.models?.text || "qwen3.6-plus"}`,
-    `TTS: ${settings.models?.tts || "speech-2.8-hd"}`,
-    `Image: ${settings.models?.image || "image-01"}`,
+    `TTS: ${formatTtsConfig(config, settings)}`,
+    `Image: ${formatImageConfig(config, settings)}`,
     `Music: ${settings.models?.music || "music-2.6"}`,
     "Search: Tavily"
   ];
+}
+
+function formatTtsConfig(config, settings) {
+  const provider = settings.media?.ttsProvider || config?.media?.ttsProvider || "minimax";
+  if (provider === "google") return `Google ${config?.google?.ttsModel || settings.google?.ttsModel || "gemini-2.5-flash-preview-tts"}`;
+  if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "mimo-v2.5-tts"}`;
+  return settings.models?.tts || "speech-2.8-hd";
+}
+
+function formatImageConfig(config, settings) {
+  const provider = settings.media?.imageProvider || config?.media?.imageProvider || "minimax";
+  if (provider === "google") return `Google ${config?.google?.imageModel || settings.google?.imageModel || "imagen-4.0-generate-001"}`;
+  return settings.models?.image || "image-01";
+}
+
+function getProviderReady(summary, provider) {
+  if (provider === "google") return Boolean(summary?.google?.hasApiKey);
+  if (provider === "xiaomi") return Boolean(summary?.xiaomi?.hasApiKey);
+  return Boolean(summary?.hasApiKey);
 }
 
 function GlassNavigation({ route, navigate }) {
@@ -504,6 +526,7 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
   const activeTemplate = templates.find((template) => template.id === form.templateId) || templates[0];
   const missing = [
     config?.provider === "xiaomi" ? (!config?.hasXiaomiKey ? "Xiaomi API key" : "") : (!config?.hasMiniMaxKey ? "MiniMax API key" : ""),
+    (config?.media?.ttsProvider === "google" || config?.media?.imageProvider === "google") && !config?.hasGoogleKey ? "Google API key" : "",
     !config?.llm?.configured ? "LLM API key" : "",
     !config?.search?.configured ? "Tavily search key" : ""
   ].filter(Boolean);
@@ -854,6 +877,7 @@ function SettingsPage({ onSaved }) {
   const [summary, setSummary] = useState(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [settingsType, setSettingsType] = useState("tts");
   const [form, setForm] = useState({
     activeProfile: "balanced",
     provider: "minimax",
@@ -1088,24 +1112,33 @@ function SettingsPage({ onSaved }) {
     }
   }
 
+  const modelTypeTabs = [
+    { id: "text", label: "Text", helper: "LLM and script", ready: summary?.llm?.hasApiKey },
+    { id: "tts", label: "TTS", helper: "Voice engines", ready: getProviderReady(summary, form.media.ttsProvider) },
+    { id: "image", label: "Image", helper: "Scene backgrounds", ready: getProviderReady(summary, form.media.imageProvider) },
+    { id: "music", label: "Music", helper: "Background music", ready: summary?.hasApiKey },
+    { id: "search", label: "Search", helper: "Tavily facts", ready: summary?.search?.hasTavilyKey }
+  ];
+  const showMiniMax = settingsType === "tts" || settingsType === "image" || settingsType === "music";
+  const showXiaomi = settingsType === "text" || settingsType === "tts";
+  const showGoogle = settingsType === "tts" || settingsType === "image";
+  const showPlanning = settingsType === "text" || settingsType === "search";
+
   return (
     <form className="settings-layout" onSubmit={save}>
       <section className="glass-card content-panel settings-hero">
         <div>
           <p className="section-kicker">Settings</p>
-          <h2>Generation engine</h2>
-          <p>Choose the text and voice engine. MiniMax remains the media engine for images and background music.</p>
+          <h2>Model type</h2>
+          <p>Choose one model type first. The settings below only show the providers and defaults for that type.</p>
         </div>
         <div className="provider-switch">
-          {[
-            { id: "minimax", label: "MiniMax", helper: "MiniMax voice + media", ready: summary?.hasApiKey },
-            { id: "xiaomi", label: "Xiaomi MiMo", helper: "MiMo text + TTS", ready: summary?.xiaomi?.hasApiKey }
-          ].map((provider) => (
+          {modelTypeTabs.map((provider) => (
             <button
               key={provider.id}
-              className={`provider-option ${form.provider === provider.id ? "active" : ""}`}
+              className={`provider-option ${settingsType === provider.id ? "active" : ""}`}
               type="button"
-              onClick={() => setForm({ ...form, provider: provider.id })}
+              onClick={() => setSettingsType(provider.id)}
             >
               <strong>{provider.label}</strong>
               <span>{provider.helper}</span>
@@ -1125,10 +1158,11 @@ function SettingsPage({ onSaved }) {
               </div>
               <span className="state-pill">settings.local.json</span>
             </div>
-            <div className={`settings-card ${form.provider === "minimax" ? "provider-active" : ""}`}>
+            {showMiniMax && (
+            <div className={`settings-card ${form.provider === "minimax" || form.media.ttsProvider === "minimax" || form.media.imageProvider === "minimax" ? "provider-active" : ""}`}>
               <div>
-                <strong>MiniMax</strong>
-                <span>{summary?.hasApiKey ? `Saved: ${summary.maskedApiKey}` : "Required for images, music, and MiniMax TTS."}</span>
+                <strong>{settingsType === "music" ? "MiniMax Music" : settingsType === "image" ? "MiniMax Image" : "MiniMax TTS"}</strong>
+                <span>{summary?.hasApiKey ? `Saved: ${summary.maskedApiKey}` : "Required for MiniMax media."}</span>
               </div>
               <input
                 value={form.minimaxApiKey}
@@ -1141,10 +1175,12 @@ function SettingsPage({ onSaved }) {
                 <button className="ghost-action danger" type="button" disabled={saving} onClick={() => clearKey("minimax")}>Clear Key</button>
               </div>
             </div>
-            <div className={`settings-card ${form.provider === "xiaomi" ? "provider-active" : ""}`}>
+            )}
+            {showXiaomi && (
+            <div className={`settings-card ${form.provider === "xiaomi" || form.media.ttsProvider === "xiaomi" ? "provider-active" : ""}`}>
               <div>
                 <strong>Xiaomi MiMo</strong>
-                <span>{summary?.xiaomi?.hasApiKey ? `Saved: ${summary.xiaomi.maskedApiKey}` : "Required when Xiaomi MiMo is selected."}</span>
+                <span>{summary?.xiaomi?.hasApiKey ? `Saved: ${summary.xiaomi.maskedApiKey}` : "Optional for text and Xiaomi TTS."}</span>
               </div>
               <input
                 value={form.xiaomiApiKey}
@@ -1183,9 +1219,11 @@ function SettingsPage({ onSaved }) {
                 <button className="ghost-action danger" type="button" disabled={saving} onClick={() => clearKey("xiaomi")}>Clear Key</button>
               </div>
             </div>
+            )}
+            {showGoogle && (
             <div className={`settings-card ${form.media.ttsProvider === "google" || form.media.imageProvider === "google" ? "provider-active" : ""}`}>
               <div>
-                <strong>Google Gemini / Imagen</strong>
+                <strong>{settingsType === "image" ? "Google Imagen" : "Google Gemini TTS"}</strong>
                 <span>{summary?.google?.hasApiKey ? `Saved: ${summary.google.maskedApiKey}` : "Optional for Google TTS and Imagen backgrounds."}</span>
               </div>
               <input
@@ -1225,11 +1263,14 @@ function SettingsPage({ onSaved }) {
                 <button className="ghost-action danger" type="button" disabled={saving} onClick={() => clearKey("google")}>Clear Key</button>
               </div>
             </div>
+            )}
           </div>
 
+          {showPlanning && (
           <div className="glass-card content-panel settings-panel-group">
             <p className="section-kicker">Planning Services</p>
-            <h2>Search and fallback LLM</h2>
+            <h2>{settingsType === "search" ? "Search provider" : "Text planning"}</h2>
+            {settingsType === "search" && (
             <div className="settings-card">
               <div>
                 <strong>Tavily Search</strong>
@@ -1246,6 +1287,8 @@ function SettingsPage({ onSaved }) {
                 <button className="ghost-action danger" type="button" disabled={saving} onClick={() => clearKey("tavily")}>Clear Key</button>
               </div>
             </div>
+            )}
+            {settingsType === "text" && (
             <div className="settings-card">
               <div>
                 <strong>Fallback LLM</strong>
@@ -1272,7 +1315,9 @@ function SettingsPage({ onSaved }) {
                 <button className="ghost-action danger" type="button" disabled={saving} onClick={() => clearKey("llm")}>Clear Key</button>
               </div>
             </div>
+            )}
           </div>
+          )}
         </div>
 
         <aside className="glass-card content-panel settings-panel settings-sidebar">
@@ -1289,41 +1334,133 @@ function SettingsPage({ onSaved }) {
             </select>
           </label>
           <div className="settings-note">
-            <strong>{form.provider === "xiaomi" ? "Xiaomi active" : "MiniMax active"}</strong>
-            <span>{form.provider === "xiaomi" ? "MiMo writes scripts and generates narration. MiniMax still creates images and music." : "Fallback LLM writes scripts. MiniMax generates narration, images, and music."}</span>
+            <strong>{modelTypeTabs.find((item) => item.id === settingsType)?.label} defaults</strong>
+            <span>
+              {settingsType === "text" && `Script engine: ${form.provider === "xiaomi" ? "Xiaomi MiMo" : "Fallback LLM"}.`}
+              {settingsType === "tts" && `Voice engine: ${form.media.ttsProvider}.`}
+              {settingsType === "image" && `Scene image engine: ${form.media.imageProvider}.`}
+              {settingsType === "music" && "Background music currently uses MiniMax."}
+              {settingsType === "search" && "Search grounding currently uses Tavily."}
+            </span>
           </div>
           <div className="model-grid">
-            <label>
-              Text Model
-              <input value={form.models.text} onChange={(event) => updateModel("text", event.target.value)} />
-            </label>
-            <label>
-              MiniMax TTS
-              <input value={form.models.tts} onChange={(event) => updateModel("tts", event.target.value)} />
-            </label>
-            <label>
-              Image Model
-              <input value={form.models.image} onChange={(event) => updateModel("image", event.target.value)} />
-            </label>
-            <label>
-              Music Model
-              <input value={form.models.music} onChange={(event) => updateModel("music", event.target.value)} />
-            </label>
-            <label>
-              English Voice
-              <input value={form.minimax.englishVoice} onChange={(event) => updateMiniMax("englishVoice", event.target.value)} />
-            </label>
-            <label>
-              Chinese Voice
-              <input value={form.minimax.chineseVoice} onChange={(event) => updateMiniMax("chineseVoice", event.target.value)} />
-            </label>
-            <label>
-              Music Tracks
-              <select value={form.minimax.musicTrackCount} onChange={(event) => updateMiniMax("musicTrackCount", event.target.value)}>
-                <option value="3">3 tracks</option>
-                <option value="4">4 tracks</option>
-              </select>
-            </label>
+            {settingsType === "text" && (
+              <>
+                <label>
+                  Text Engine
+                  <select value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })}>
+                    <option value="minimax">Fallback LLM</option>
+                    <option value="xiaomi">Xiaomi MiMo</option>
+                  </select>
+                </label>
+                <label>
+                  Fallback Text Model
+                  <input value={form.models.text} onChange={(event) => updateModel("text", event.target.value)} />
+                </label>
+                <label>
+                  Xiaomi Text Model
+                  <select value={form.xiaomiTextModel} onChange={(event) => setForm({ ...form, xiaomiTextModel: event.target.value })}>
+                    {(summary?.xiaomi?.textModels || ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni"]).map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+
+            {settingsType === "tts" && (
+              <>
+                <label>
+                  TTS Provider
+                  <select value={form.media.ttsProvider} onChange={(event) => setForm({ ...form, media: { ...form.media, ttsProvider: event.target.value } })}>
+                    <option value="minimax">MiniMax TTS</option>
+                    <option value="xiaomi">Xiaomi TTS</option>
+                    <option value="google">Google Gemini TTS</option>
+                  </select>
+                </label>
+                <label>
+                  MiniMax TTS Model
+                  <input value={form.models.tts} onChange={(event) => updateModel("tts", event.target.value)} />
+                </label>
+                <label>
+                  Xiaomi TTS Model
+                  <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
+                    {(summary?.xiaomi?.ttsModels || ["mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign", "mimo-v2.5-tts", "mimo-v2-tts"]).map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Google TTS Model
+                  <input value={form.googleTtsModel} onChange={(event) => setForm({ ...form, googleTtsModel: event.target.value })} />
+                </label>
+                <label>
+                  English Voice
+                  <input value={form.minimax.englishVoice} onChange={(event) => updateMiniMax("englishVoice", event.target.value)} />
+                </label>
+                <label>
+                  Google Voice
+                  <select value={form.googleVoice} onChange={(event) => setForm({ ...form, googleVoice: event.target.value })}>
+                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                      <option key={voice} value={voice}>{voice}</option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+
+            {settingsType === "image" && (
+              <>
+                <label>
+                  Image Provider
+                  <select value={form.media.imageProvider} onChange={(event) => setForm({ ...form, media: { ...form.media, imageProvider: event.target.value } })}>
+                    <option value="minimax">MiniMax Image</option>
+                    <option value="google">Google Imagen</option>
+                  </select>
+                </label>
+                <label>
+                  MiniMax Image Model
+                  <input value={form.models.image} onChange={(event) => updateModel("image", event.target.value)} />
+                </label>
+                <label>
+                  Google Imagen Model
+                  <input value={form.googleImageModel} onChange={(event) => setForm({ ...form, googleImageModel: event.target.value })} />
+                </label>
+              </>
+            )}
+
+            {settingsType === "music" && (
+              <>
+                <label>
+                  Music Provider
+                  <input value="MiniMax Music" readOnly />
+                </label>
+                <label>
+                  Music Model
+                  <input value={form.models.music} onChange={(event) => updateModel("music", event.target.value)} />
+                </label>
+                <label>
+                  Music Tracks
+                  <select value={form.minimax.musicTrackCount} onChange={(event) => updateMiniMax("musicTrackCount", event.target.value)}>
+                    <option value="3">3 tracks</option>
+                    <option value="4">4 tracks</option>
+                  </select>
+                </label>
+              </>
+            )}
+
+            {settingsType === "search" && (
+              <>
+                <label>
+                  Search Provider
+                  <input value="Tavily" readOnly />
+                </label>
+                <label>
+                  Search Usage
+                  <input value="Story overview and factual draft grounding" readOnly />
+                </label>
+              </>
+            )}
           </div>
         </aside>
       </section>

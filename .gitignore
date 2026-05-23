@@ -1,5 +1,9 @@
 node_modules/
 .env
+.env.*
 settings.local.json
 outputs/
 .DS_Store
+screenshots/
+TODO.md
+*.log
