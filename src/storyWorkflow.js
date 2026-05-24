@@ -16,6 +16,7 @@ const { MINIMAX_TTS_MODEL, MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require(
 const { getEffectiveSettings } = require("./settingsStore");
 const { slugify, ensureDir, pathExists } = require("./utils");
 const { classifyError } = require("./errorClassifier");
+const { enrichStoryVocabulary } = require("./vocabularyTools");
 
 const execFileAsync = promisify(execFile);
 
@@ -37,14 +38,14 @@ async function generateStoryWorkflow(options = {}) {
   const effectiveApiKey = options.apiKey || settings.minimaxApiKey;
   const effectiveModels = settings.models || {};
 
-  const story = options.storyDraft || await generateStory({
+  const story = enrichStoryVocabulary(options.storyDraft || await generateStory({
     topic,
     targetDurationMinutes: minutes,
     level: "beginner",
     annotationStyle: "zh-brief",
     mode: options.storyMode || "lesson",
     outline: options.storyOutline || null
-  });
+  }));
   if (options.template && !story.template) {
     story.template = options.template;
   }
@@ -150,7 +151,7 @@ async function generateStoryWorkflow(options = {}) {
 
     const nextScriptJson = {
     ...story,
-    readingOrder: readingItems.map(({ id, kind, text, ttsText, language, pauseAfterSeconds, startSeconds, endSeconds, sectionIndex, sentenceIndex, vocabularyIndex, word, translation }) => ({
+    readingOrder: readingItems.map(({ id, kind, text, ttsText, language, pauseAfterSeconds, startSeconds, endSeconds, sectionIndex, sentenceIndex, vocabularyIndex, word, translation, phonetic }) => ({
       id,
       kind,
       text,
@@ -163,7 +164,8 @@ async function generateStoryWorkflow(options = {}) {
       sentenceIndex,
       vocabularyIndex,
       word,
-      translation
+      translation,
+      phonetic
     })),
     outputs
   };

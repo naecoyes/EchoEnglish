@@ -220,6 +220,7 @@ async function getSettingsSummary() {
 
 async function saveSettings(input = {}) {
   const current = await readLocalSettings();
+  const googleApiKeyInput = normalizeOptionalSecret(input.google?.apiKey, "Google API key");
   const nextKey = typeof input.minimaxApiKey === "string" && input.minimaxApiKey.trim()
     ? input.minimaxApiKey.trim()
     : current.minimaxApiKey;
@@ -256,8 +257,8 @@ async function saveSettings(input = {}) {
     google: {
       ...current.google,
       ...(input.google || {}),
-      apiKey: typeof input.google?.apiKey === "string" && input.google.apiKey.trim()
-        ? input.google.apiKey.trim()
+      apiKey: googleApiKeyInput
+        ? googleApiKeyInput
         : current.google?.apiKey
     },
     media: {
@@ -461,9 +462,16 @@ async function testXiaomiConnection(input = {}) {
 
 async function testGoogleConnection(input = {}) {
   const effective = await getEffectiveSettings();
+  let inputGoogleKey = "";
+  try {
+    inputGoogleKey = normalizeOptionalSecret(input.google?.apiKey, "Google API key");
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
   const google = {
-    apiKey: String(input.google?.apiKey || effective.google?.apiKey || "").trim(),
+    apiKey: String(inputGoogleKey || effective.google?.apiKey || "").trim(),
     baseUrl: String(input.google?.baseUrl || effective.google?.baseUrl || DEFAULT_GOOGLE.baseUrl).trim(),
+    imageModel: String(input.google?.imageModel || effective.google?.imageModel || DEFAULT_GOOGLE.imageModel).trim(),
     ttsModel: String(input.google?.ttsModel || effective.google?.ttsModel || DEFAULT_GOOGLE.ttsModel).trim(),
     voice: String(input.google?.voice || effective.google?.voice || DEFAULT_GOOGLE.voice).trim()
   };
@@ -472,30 +480,22 @@ async function testGoogleConnection(input = {}) {
   }
 
   try {
-    const url = `${google.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(google.ttsModel)}:generateContent?key=${encodeURIComponent(google.apiKey)}`;
+    const url = `${google.baseUrl.replace(/\/$/, "")}/models`;
     const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: "Say OK." }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: google.voice }
-            }
-          }
-        }
-      })
+      method: "GET",
+      headers: { "x-goog-api-key": google.apiKey }
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       return { ok: false, error: `Google returned HTTP ${response.status}. ${payload?.error?.message || ""}`.trim() };
     }
-    if (!payload?.candidates?.[0]?.content?.parts?.some((part) => part.inlineData?.data)) {
-      return { ok: false, error: "Google response did not include audio data." };
+    if (!Array.isArray(payload?.models)) {
+      return { ok: false, error: "Google response did not include a models list." };
     }
-    return { ok: true, message: "Google API key is valid." };
+    return {
+      ok: true,
+      message: `Google API key is valid. Configured TTS: ${google.ttsModel}; Imagen: ${google.imageModel}; voice: ${google.voice}.`
+    };
   } catch (error) {
     return { ok: false, error: error.message };
   }
@@ -598,6 +598,15 @@ function normalizeProfiles(input = {}) {
 function cleanModel(value, fallback) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || fallback;
+}
+
+function normalizeOptionalSecret(value, label) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  if (/^https?:\/\//i.test(text)) {
+    throw new Error(`${label} should be the actual API key, not a documentation URL.`);
+  }
+  return text;
 }
 
 function normalizeTextModel(value, llmModel, fallback) {

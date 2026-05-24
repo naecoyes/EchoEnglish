@@ -1,5 +1,6 @@
 const { DEFAULT_LLM, getEffectiveSettings } = require("./settingsStore");
 const { formatSearchContext } = require("./tavilySearch");
+const { enrichStoryVocabulary } = require("./vocabularyTools");
 
 async function createStoryOutline({ topic, minutes, searchContext = null, template = null }) {
   const config = await getLlmConfig();
@@ -110,7 +111,8 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     "- Use 28-30 internal scenes. Each scene has exactly 4 English sentences.",
     "- The story should naturally last about 15 minutes when read slowly with short pauses.",
     "- The video needs 112-120 sentence-level background images, so every sentence must describe a visually useful moment.",
-    "- Every scene needs Chinese sentence translations, 3 vocabulary notes, and a photorealistic image prompt.",
+    "- Every scene needs Chinese sentence translations, 3 useful vocabulary notes, and a photorealistic image prompt.",
+    "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
     "- Image prompts must describe a real photographed/cinematic background, no text, no subtitles, no logo, no UI.",
     factualMode
       ? "- Factual documentary mode is required. Do not create fictional protagonists, invented employees, invented dialogue, private emotions, or scenes that are not supported by the outline/search context."
@@ -235,7 +237,7 @@ function normalizeStory(input, context) {
     return fallbackStoryFromOutline(outline, context);
   }
 
-  return {
+  return enrichStoryVocabulary({
     version: "0.2.0",
     mode: "pure-story",
     source: context.source,
@@ -259,14 +261,14 @@ function normalizeStory(input, context) {
     opening: [],
     sections: normalizedSections,
     closing: []
-  };
+  });
 }
 
 function normalizeSection(section, index, storyTitle) {
   const sentences = normalizeStringArray(section?.sentences, []).map(cleanSentence).filter(Boolean).slice(0, 4);
   const translations = normalizeStringArray(section?.translations, []).slice(0, sentences.length);
   const vocabulary = Array.isArray(section?.vocabulary)
-    ? section.vocabulary.map((pair) => [cleanText(pair?.[0]), cleanText(pair?.[1])]).filter(([word, zh]) => word && zh).slice(0, 4)
+    ? section.vocabulary.map((pair) => [cleanText(pair?.[0]), cleanText(pair?.[1]), cleanText(pair?.[2])]).filter(([word, zh]) => word && zh).slice(0, 4)
     : [];
   const visual = cleanText(section?.visual) || `${storyTitle}, scene ${index + 1}, cinematic story moment`;
   return {
@@ -294,7 +296,7 @@ function fallbackStoryFromOutline(outlineInput, context) {
     sections.push(scene);
   }
 
-  return {
+  return enrichStoryVocabulary({
     version: "0.2.0",
     mode: "pure-story",
     source: "local",
@@ -318,7 +320,7 @@ function fallbackStoryFromOutline(outlineInput, context) {
     opening: [],
     sections,
     closing: []
-  };
+  });
 }
 
 function fallbackScene(outline, beat, nextBeat, index) {

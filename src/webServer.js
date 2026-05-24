@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
 const http = require("node:http");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
@@ -135,7 +136,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/settings") {
       const body = await readJson(req);
-      return sendJson(res, await saveSettings(body));
+      try {
+        return sendJson(res, await saveSettings(body));
+      } catch (error) {
+        return sendJson(res, { error: error.message }, 400);
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/api/settings/test") {
@@ -283,8 +288,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, await getMediaInfo(url.searchParams.get("path")));
     }
 
-    if (req.method === "GET" && url.pathname.startsWith("/outputs/")) {
-      return serveOutputFile(res, url.pathname);
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/outputs/")) {
+      return serveOutputFile(req, res, url.pathname);
     }
 
     if (req.method === "GET" && await serveFrontend(res, url.pathname)) {
@@ -842,18 +847,71 @@ function titleFromSlug(slug) {
     .join(" ");
 }
 
-async function serveOutputFile(res, pathname) {
+async function serveOutputFile(req, res, pathname) {
   const target = resolveOutputPath(pathname);
   if (!target) {
     return sendJson(res, { error: "Invalid output path" }, 403);
   }
 
-  const data = await fs.readFile(target);
+  const stat = await fs.stat(target);
+  if (!stat.isFile()) {
+    return sendJson(res, { error: "Output path is not a file" }, 404);
+  }
+
+  const type = contentType(target);
+  const range = req.headers.range;
+  if (range && /^bytes=\d*-\d*$/.test(range)) {
+    const parsed = parseRangeHeader(range, stat.size);
+    if (!parsed) {
+      res.writeHead(416, {
+        "Content-Range": `bytes */${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store"
+      });
+      return res.end();
+    }
+
+    const { start, end } = parsed;
+    res.writeHead(206, {
+      "Content-Type": type,
+      "Content-Length": end - start + 1,
+      "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-store"
+    });
+    if (req.method === "HEAD") return res.end();
+    return fsSync.createReadStream(target, { start, end }).pipe(res);
+  }
+
   res.writeHead(200, {
-    "Content-Type": contentType(target),
+    "Content-Type": type,
+    "Content-Length": stat.size,
+    "Accept-Ranges": "bytes",
     "Cache-Control": "no-store"
   });
-  res.end(data);
+  if (req.method === "HEAD") return res.end();
+  return fsSync.createReadStream(target).pipe(res);
+}
+
+function parseRangeHeader(range, size) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(range || ""));
+  if (!match || size <= 0) return null;
+  let start = match[1] === "" ? null : Number(match[1]);
+  let end = match[2] === "" ? null : Number(match[2]);
+
+  if (start === null && end === null) return null;
+  if (start === null) {
+    const suffixLength = Math.max(0, end || 0);
+    if (!suffixLength) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    if (!Number.isFinite(start) || start < 0 || start >= size) return null;
+    end = end === null || !Number.isFinite(end) ? size - 1 : Math.min(end, size - 1);
+  }
+
+  if (end < start) return null;
+  return { start, end };
 }
 
 async function serveFrontend(res, pathname) {

@@ -5,5 +5,7 @@ settings.local.json
 outputs/
 .DS_Store
 screenshots/
+!docs/screenshots/
+!docs/screenshots/**
 TODO.md
 *.log

@@ -5,6 +5,7 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { ensureDir, pathExists } = require("./utils");
 const { initAudioManifest, updateAudioManifest } = require("./outputManifests");
+const { fetchJsonWithPolicy } = require("./apiLimiter");
 
 const execFileAsync = promisify(execFile);
 const API_URL = "https://api.minimaxi.com/v1/t2a_v2";
@@ -188,14 +189,22 @@ async function synthesizeMiniMax({ apiKey, model, voice, text, speed, languageBo
     aigc_watermark: false
   };
 
-  const payload = await fetchWithRetry(API_URL, {
+  const payload = await fetchJsonWithPolicy("minimax:tts", API_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
+  }, {
+    minIntervalMs: Number(process.env.MINIMAX_TTS_MIN_INTERVAL_MS || 3500)
   });
+
+  const statusCode = payload?.base_resp?.status_code;
+  if (statusCode !== 0 && statusCode !== undefined) {
+    const statusMsg = payload?.base_resp?.status_msg || "unknown error";
+    throw new Error(`MiniMax TTS API failed: ${statusMsg}`);
+  }
 
   const hexAudio = payload?.data?.audio;
   if (!hexAudio || typeof hexAudio !== "string") {

@@ -14,6 +14,24 @@ English story narration video generator with cinematic scene images, bilingual c
 - PIN-based access protection
 - Quality report generation
 
+## Screenshots
+
+### Generate Dashboard
+
+![Generate dashboard](docs/screenshots/generate-dashboard.png)
+
+### Video Preview
+
+![Video preview](docs/screenshots/preview-video.png)
+
+### Model Settings
+
+![Model settings](docs/screenshots/settings-models.png)
+
+### Mobile Layout
+
+![Mobile generate layout](docs/screenshots/mobile-generate.png)
+
 ## Quick Start
 
 ```bash
@@ -144,6 +162,7 @@ Visitors must enter the PIN before using the dashboard.
 ## Security
 
 - API keys are stored in `settings.local.json` (gitignored)
-- `.env` file is gitignored
+- `.env` file is gitignored — copy `.env.example` to `.env` and fill in your keys
 - Keys are masked in the browser after saving
 - No hardcoded secrets in source code
+- **Never commit API keys** — `.env.example` only contains placeholders

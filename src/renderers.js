@@ -3,6 +3,13 @@ function buildReadingItems(story) {
   let counter = 1;
 
   if (story.mode === "pure-story") {
+    const gradeLevel = estimateUsGradeLevel(story);
+    const introText = `Today's practice is ${story.title}. Listen first, then read aloud with the story. The difficulty is about U.S. elementary ${gradeLevel} English.`;
+    items.push(createItem(counter, "title-card", introText, "en", 1.4, {
+      ttsText: introText
+    }));
+    counter += 1;
+
     story.sections.forEach((section, sectionIndex) => {
       section.sentences.forEach((sentence, sentenceIndex) => {
         items.push(createItem(counter, "story-sentence", sentence, "en", story.defaults.sentencePauseSeconds, {
@@ -12,6 +19,10 @@ function buildReadingItems(story) {
         counter += 1;
       });
     });
+
+    items.push(createItem(counter, "vocabulary-review", "Review these important words.", "en", 6, {
+      ttsText: "Now review these important words from today's story."
+    }));
     return items;
   }
 
@@ -47,6 +58,12 @@ function buildReadingItems(story) {
   });
 
   return items;
+}
+
+function estimateUsGradeLevel(story) {
+  if (story?.contentMode === "factual-documentary") return "Grade 4 to 5";
+  if (story?.level === "beginner") return "Grade 3 to 4";
+  return "Grade 4 to 5";
 }
 
 function normalizeSectionTitleForSpeech(title) {
@@ -93,8 +110,8 @@ function renderMarkdown(story) {
       }
     });
     lines.push("", "Vocabulary:");
-    section.vocabulary.forEach(([word, translation]) => {
-      lines.push(`- ${word}: ${translation}`);
+    section.vocabulary.forEach(([word, translation, phonetic]) => {
+      lines.push(`- ${word}${phonetic ? ` ${phonetic}` : ""}: ${translation}`);
     });
     lines.push("");
   });

@@ -78,6 +78,8 @@ async function initImageManifest(outputDir, scenes) {
       prompt: scene.imagePrompt || scene.visual || "",
       status: imagePath ? "completed" : prior.status || "pending",
       imagePath: imagePath || null,
+      quality: prior.quality || null,
+      attempts: Number(prior.attempts || 0),
       error: imagePath ? null : prior.error || null
     });
   }

@@ -522,6 +522,8 @@ function GlassNavigation({ route, navigate }) {
 
 function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFeedback, draftMeta, apiReady, config, logs, status, onSubmit, onRevise }) {
   const confirmed = Boolean(draft && draft.title);
+  const busy = status === "queued" || status === "running";
+  const failed = status === "failed" || status === "failed_recoverable";
   const templates = config?.videoTemplates?.length ? config.videoTemplates : [];
   const activeTemplate = templates.find((template) => template.id === form.templateId) || templates[0];
   const missing = [
@@ -572,8 +574,16 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
               disabled
             />
           </label>
-          <button className="primary-action" type="submit">
-            {!apiReady ? "Configure API Keys" : confirmed ? "Confirm Draft And Generate Video" : "Generate Review Draft"}
+          <button className="primary-action" type="submit" disabled={busy}>
+            {!apiReady
+              ? "Configure API Keys"
+              : busy && !confirmed
+                ? "Generating Draft..."
+                : busy
+                  ? "Submitting Video Job..."
+                  : confirmed
+                    ? "Confirm Draft And Generate Video"
+                    : "Generate Review Draft"}
           </button>
           {missing.length > 0 && (
             <p className="form-hint">Required before generation: {missing.join(" and ")}.</p>
@@ -591,6 +601,8 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
             meta={draftMeta}
             onRevise={onRevise}
           />
+        ) : busy || failed ? (
+          <DraftProgress status={status} logs={logs} />
         ) : (
           <EmptyState title="No draft yet" text="Enter a topic to generate a complete 15-minute draft for review before video production." />
         )}
@@ -600,6 +612,29 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
         steps={getPipelineSteps({ logs, status, hasDraft: Boolean(draft), mode: "generate" })}
       />
     </section>
+  );
+}
+
+function DraftProgress({ status, logs = [] }) {
+  const failed = status === "failed" || status === "failed_recoverable";
+  const visibleLogs = logs.length ? logs : ["Preparing draft generation..."];
+  return (
+    <div className={`draft-progress ${failed ? "failed" : ""}`}>
+      <div className="draft-progress-orb" aria-hidden="true" />
+      <div>
+        <h2>{failed ? "Draft generation failed" : "Generating review draft"}</h2>
+        <p>
+          {failed
+            ? "The request stopped before a draft was created. Check the message below, adjust Settings if needed, then try again."
+            : "EchoEnglish is searching facts and asking the configured LLM to write the full 15-minute draft. This can take one or two minutes."}
+        </p>
+      </div>
+      <div className="draft-log-list">
+        {visibleLogs.slice(-5).map((line, index) => (
+          <span key={`${line}-${index}`}>{line}</span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -678,6 +713,8 @@ function PreviewPage({ output }) {
 
 function VideoPlayer({ src, title }) {
   const videoRef = useRef(null);
+  const scrubberRef = useRef(null);
+  const draggingRef = useRef(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -729,6 +766,49 @@ function VideoPlayer({ src, title }) {
     setTime(safeTime);
   }
 
+  function seekFromClientX(clientX) {
+    const node = scrubberRef.current;
+    if (!node || !duration) return;
+    const rect = node.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    seekTo(ratio * duration);
+  }
+
+  function handleScrubberPointerDown(event) {
+    if (!duration) return;
+    draggingRef.current = true;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    seekFromClientX(event.clientX);
+  }
+
+  function handleScrubberPointerMove(event) {
+    if (!draggingRef.current) return;
+    seekFromClientX(event.clientX);
+  }
+
+  function stopScrubberDrag(event) {
+    draggingRef.current = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  function handleScrubberKeyDown(event) {
+    if (!duration) return;
+    const step = event.shiftKey ? 10 : 5;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seekTo(time - step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seekTo(time + step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      seekTo(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      seekTo(duration);
+    }
+  }
+
   const ratio = duration ? (time / duration) * 100 : 0;
 
   return (
@@ -744,18 +824,25 @@ function VideoPlayer({ src, title }) {
         onDurationChange={(event) => setDuration(event.currentTarget.duration || duration || 0)}
       />
       <div className="scrubber-shell">
-        <input
-          className="scrubber-range"
-          type="range"
-          min="0"
-          max={duration || 0}
-          step="0.1"
-          value={duration ? Math.min(time, duration) : 0}
+        <div
+          ref={scrubberRef}
+          className="scrubber"
+          role="slider"
+          tabIndex={0}
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration || 0)}
+          aria-valuenow={Math.round(time || 0)}
           aria-label="Video progress"
-          onInput={(event) => seekTo(event.currentTarget.value)}
-          onChange={(event) => seekTo(event.currentTarget.value)}
+          onPointerDown={handleScrubberPointerDown}
+          onPointerMove={handleScrubberPointerMove}
+          onPointerUp={stopScrubberDrag}
+          onPointerCancel={stopScrubberDrag}
+          onKeyDown={handleScrubberKeyDown}
           style={{ "--progress": `${ratio}%` }}
-        />
+        >
+          <span className="scrubber-fill" />
+          <span className="scrubber-thumb" />
+        </div>
         <div className="time-row">
           <span>{formatTime(time)}</span>
           <span>{formatTime(duration)}</span>

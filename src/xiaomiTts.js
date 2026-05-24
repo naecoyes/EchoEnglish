@@ -5,6 +5,7 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { ensureDir, pathExists } = require("./utils");
 const { initAudioManifest, updateAudioManifest } = require("./outputManifests");
+const { fetchBufferWithPolicy } = require("./apiLimiter");
 
 const execFileAsync = promisify(execFile);
 
@@ -170,13 +171,15 @@ async function synthesizeXiaomi({ apiUrl, apiKey, model, voice, text, speed }) {
     speed: speed || 1.0
   };
 
-  const audioBytes = await fetchWithRetry(apiUrl, {
+  const audioBytes = await fetchBufferWithPolicy("xiaomi:tts", apiUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
+  }, {
+    minIntervalMs: 3500
   });
 
   return audioBytes;

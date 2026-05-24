@@ -2,6 +2,8 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { ensureDir, pathExists } = require("./utils");
 const { initImageManifest, updateImageManifest } = require("./outputManifests");
+const { fetchBufferWithPolicy, fetchJsonWithPolicy } = require("./apiLimiter");
+const { validateImageOrThrow } = require("./imageQuality");
 
 const API_URL = "https://api.minimaxi.com/v1/image_generation";
 
@@ -19,9 +21,18 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
     const scene = scenes[index];
     const cachedPath = await findExistingImage(imagesDir, scene.id);
     if (cachedPath) {
+      const quality = await validateCachedImage(cachedPath, imagesDir, scene.id);
+      if (!quality) {
+        await updateImageManifest(outputDir, scene.id, {
+          status: "pending",
+          imagePath: null,
+          error: "Cached image failed quality checks and will be regenerated."
+        });
+      } else {
       await updateImageManifest(outputDir, scene.id, {
         status: "completed",
         imagePath: cachedPath,
+        quality,
         error: null
       });
       results.push({
@@ -31,27 +42,29 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
         cached: true
       });
       continue;
+      }
     }
 
     await updateImageManifest(outputDir, scene.id, {
       status: "running",
+      attempts: 0,
       error: null
     });
 
     let imageUrl = null;
     let outputPath = null;
     try {
-      imageUrl = await requestImage({
+      const generated = await generateValidatedImage({
+        scene,
+        imagesDir,
+        outputDir,
         apiKey,
         model,
-        prompt: scene.imagePrompt || buildPrompt(scene),
         aspectRatio,
         promptOptimizer
       });
-
-      const bytes = await downloadImageWithRetry(imageUrl, scene.id);
-      outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
-      await fs.writeFile(outputPath, bytes);
+      imageUrl = generated.imageUrl;
+      outputPath = generated.outputPath;
     } catch (error) {
       await updateImageManifest(outputDir, scene.id, {
         status: "failed",
@@ -73,6 +86,45 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
   }
 
   return results;
+}
+
+async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await updateImageManifest(outputDir, scene.id, {
+      status: "running",
+      attempts: attempt,
+      error: null
+    });
+    try {
+      const imageUrl = await requestImage({
+        apiKey,
+        model,
+        prompt: scene.imagePrompt || buildPrompt(scene),
+        aspectRatio,
+        promptOptimizer
+      });
+      const bytes = await downloadImageWithRetry(imageUrl, scene.id);
+      const outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
+      await fs.writeFile(outputPath, bytes);
+      const quality = await validateImageOrThrow(outputPath);
+      await updateImageManifest(outputDir, scene.id, {
+        quality,
+        error: null
+      });
+      return { imageUrl, outputPath, quality };
+    } catch (error) {
+      lastError = error;
+      await updateImageManifest(outputDir, scene.id, {
+        status: "running",
+        error: error.message,
+        quality: error.quality || null
+      });
+      await deleteSceneImage(imagesDir, scene.id);
+      if (!isImageQualityError(error)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 async function findExistingImage(imagesDir, sceneId) {
@@ -113,7 +165,7 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
     aigc_watermark: false
   };
 
-  const payload = await fetchWithRetry(API_URL, {
+  const payload = await fetchJsonWithPolicy("minimax:image", API_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -121,6 +173,12 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
     },
     body: JSON.stringify(body)
   });
+
+  const statusCode = payload?.base_resp?.status_code;
+  if (statusCode !== 0 && statusCode !== undefined) {
+    const statusMsg = payload?.base_resp?.status_msg || "unknown error";
+    throw new Error(`MiniMax image API failed: ${statusMsg}`);
+  }
 
   const imageUrl = payload?.data?.image_urls?.[0];
   if (!imageUrl) {
@@ -130,21 +188,21 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
   return imageUrl;
 }
 
-async function downloadImageWithRetry(imageUrl, sceneId) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      return Buffer.from(await response.arrayBuffer());
-    } catch (error) {
-      lastError = error;
-      await delay(1500 * (attempt + 1));
-    }
+async function validateCachedImage(cachedPath, imagesDir, sceneId) {
+  try {
+    return await validateImageOrThrow(cachedPath);
+  } catch {
+    await deleteSceneImage(imagesDir, sceneId);
+    return null;
   }
-  throw new Error(`Failed to download generated image for ${sceneId}: ${lastError.message}`);
+}
+
+async function downloadImageWithRetry(imageUrl, sceneId) {
+  try {
+    return await fetchBufferWithPolicy("download:image", imageUrl);
+  } catch (error) {
+    throw new Error(`Failed to download generated image for ${sceneId}: ${error.message}`);
+  }
 }
 
 function buildPrompt(scene) {
@@ -155,44 +213,17 @@ function buildPrompt(scene) {
   ].join(" ");
 }
 
-async function fetchWithRetry(url, options) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      const response = await fetch(url, options);
-      if (response.status === 429 || response.status >= 500) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(`MiniMax request failed with HTTP ${response.status}.`);
-      }
-
-      const statusCode = payload?.base_resp?.status_code;
-      if (statusCode !== 0 && statusCode !== undefined) {
-        const statusMsg = payload?.base_resp?.status_msg || "unknown error";
-        if (statusMsg.toLowerCase().includes("rate limit") || statusCode === 1004 || statusCode === 104) {
-          throw new Error(`Rate limit hit: ${statusMsg}`);
-        }
-        const err = new Error(`MiniMax API failed: ${statusMsg}`);
-        err.isFinal = true;
-        throw err;
-      }
-
-      return payload;
-    } catch (error) {
-      if (error.isFinal) throw error;
-      lastError = error;
+async function deleteSceneImage(imagesDir, sceneId) {
+  for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+    const candidate = path.join(imagesDir, `${sceneId}${ext}`);
+    if (await pathExists(candidate)) {
+      await fs.unlink(candidate).catch(() => {});
     }
-    await delay(1500 * (attempt + 1));
   }
-
-  throw lastError;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function isImageQualityError(error) {
+  return Boolean(error?.quality);
 }
 
 module.exports = {

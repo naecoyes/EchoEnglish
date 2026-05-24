@@ -80,11 +80,16 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
 }
 
 async function synthesizeGoogle({ apiKey, baseUrl, model, voice, text }) {
-  const url = `${(baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "")}/models/${encodeURIComponent(model || "gemini-2.5-flash-preview-tts")}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const selectedModel = model || "gemini-2.5-flash-preview-tts";
+  const url = `${(baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "")}/models/${encodeURIComponent(selectedModel)}:generateContent`;
   const payload = await fetchWithRetry(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey
+    },
     body: JSON.stringify({
+      model: selectedModel,
       contents: [{ parts: [{ text }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
