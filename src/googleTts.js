@@ -31,7 +31,8 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
   for (let index = 0; index < readingItems.length; index += 1) {
     const item = readingItems[index];
     const speechText = item.ttsText || item.text;
-    const cacheKey = createCacheKey({ model, voice, text: speechText });
+    const selectedVoice = item.voice || voice;
+    const cacheKey = createCacheKey({ model, voice: selectedVoice, text: speechText });
     const wavPath = path.join(cacheDir, `${cacheKey}.wav`);
     pushLog(logs, `Audio ${index + 1}/${total}: ${item.text.slice(0, 60)}${item.text.length > 60 ? "…" : ""}`);
     await updateAudioManifest(outputDir, item.id, { status: "running", cacheKey, path: wavPath, error: null });
@@ -45,7 +46,7 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
         await waitForRequestSlot(lastRequestAt, minimumRequestIntervalMs);
         lastRequestAt = Date.now();
         apiRequestCount += 1;
-        const pcmBytes = await synthesizeGoogle({ apiKey, baseUrl, model, voice, text: speechText });
+        const pcmBytes = await synthesizeGoogle({ apiKey, baseUrl, model, voice: selectedVoice, text: speechText });
         await fs.writeFile(wavPath, pcmToWav(pcmBytes, 24000, 1, 16));
         spokenSeconds = await getDurationSeconds(wavPath);
       }

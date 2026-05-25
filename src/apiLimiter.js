@@ -2,15 +2,15 @@ const queues = new Map();
 const lastCallAt = new Map();
 
 const DEFAULT_POLICIES = {
-  "minimax:tts": { minIntervalMs: 3500, retries: 5 },
-  "minimax:image": { minIntervalMs: 1800, retries: 5 },
-  "minimax:music": { minIntervalMs: 2200, retries: 4 },
-  "google:tts": { minIntervalMs: 1600, retries: 4 },
-  "google:image": { minIntervalMs: 2200, retries: 4 },
-  "xiaomi:tts": { minIntervalMs: 3500, retries: 5 },
-  "llm:text": { minIntervalMs: 1000, retries: 3 },
-  "tavily:search": { minIntervalMs: 1000, retries: 3 },
-  "download:image": { minIntervalMs: 150, retries: 5 }
+  "minimax:tts": { minIntervalMs: 3500, retries: 5, timeoutMs: 90000 },
+  "minimax:image": { minIntervalMs: 1800, retries: 5, timeoutMs: 120000 },
+  "minimax:music": { minIntervalMs: 2200, retries: 4, timeoutMs: 180000 },
+  "google:tts": { minIntervalMs: 1600, retries: 4, timeoutMs: 90000 },
+  "google:image": { minIntervalMs: 2200, retries: 4, timeoutMs: 120000 },
+  "xiaomi:tts": { minIntervalMs: 3500, retries: 5, timeoutMs: 90000 },
+  "llm:text": { minIntervalMs: 1000, retries: 3, timeoutMs: 180000 },
+  "tavily:search": { minIntervalMs: 1000, retries: 3, timeoutMs: 45000 },
+  "download:image": { minIntervalMs: 150, retries: 5, timeoutMs: 60000 }
 };
 
 async function fetchJsonWithPolicy(policyKey, url, options = {}, overrides = {}) {
@@ -40,7 +40,7 @@ async function fetchWithPolicy(policyKey, url, options = {}, overrides = {}) {
     for (let attempt = 0; attempt < policy.retries; attempt += 1) {
       await waitForSlot(policyKey, policy.minIntervalMs);
       try {
-        const response = await fetch(url, options);
+        const response = await fetchWithTimeout(url, options, policy.timeoutMs);
         if (isRetryableStatus(response.status)) {
           const retryAfterMs = retryAfterToMs(response.headers.get("retry-after"));
           lastError = httpError(policyKey, response.status, null, "");
@@ -88,8 +88,29 @@ function resolvePolicy(policyKey, overrides) {
       : defaults.retries,
     backoffBaseMs: Number.isFinite(Number(overrides.backoffBaseMs))
       ? Math.max(250, Number(overrides.backoffBaseMs))
-      : 1400
+      : 1400,
+    timeoutMs: Number.isFinite(Number(overrides.timeoutMs))
+      ? Math.max(1000, Number(overrides.timeoutMs))
+      : defaults.timeoutMs || 90000
   };
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`)), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function isRetryableStatus(status) {

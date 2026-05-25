@@ -30,7 +30,7 @@ async function createAudio({ readingItems, outputDir, englishVoice, chineseVoice
     const baseName = String(index + 1).padStart(4, "0");
     const aiffPath = path.join(workDir, `${baseName}.aiff`);
     const wavPath = path.join(workDir, `${baseName}.wav`);
-    const voice = item.language === "zh" ? selectedChineseVoice : selectedEnglishVoice;
+    const voice = item.voice || (item.language === "zh" ? selectedChineseVoice : selectedEnglishVoice);
     const rate = item.language === "zh" ? 170 : englishRate;
 
     await execFileAsync("say", ["-v", voice, "-r", String(rate), "-o", aiffPath, item.text], {

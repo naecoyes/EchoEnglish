@@ -41,7 +41,7 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
     const speechText = item.ttsText || item.text;
 
     const baseName = String(index + 1).padStart(4, "0");
-    const voice = item.language === "zh" ? chineseVoice : englishVoice;
+    const voice = item.voice || (item.language === "zh" ? chineseVoice : englishVoice);
     const languageBoost = item.language === "zh" ? "Chinese" : "English";
     const cacheKey = createCacheKey({ model, voice, text: speechText, speed, languageBoost });
     const wavPath = path.join(cacheDir, `${cacheKey}.wav`);
@@ -63,14 +63,28 @@ async function createAudio({ readingItems, outputDir, apiKey, model, englishVoic
         apiRequestCount += 1;
 
         const mp3Path = path.join(workDir, `${baseName}-${cacheKey}.mp3`);
-        const audioBytes = await synthesizeMiniMax({
-          apiKey,
-          model,
-          voice,
-          text: speechText,
-          speed,
-          languageBoost
-        });
+        let audioBytes;
+        try {
+          audioBytes = await synthesizeMiniMax({
+            apiKey,
+            model,
+            voice,
+            text: speechText,
+            speed,
+            languageBoost
+          });
+        } catch (error) {
+          if (!item.voice || item.voice === englishVoice || item.language === "zh") throw error;
+          pushLog(logs, `Voice ${item.voice} failed for ${item.speakerName || item.id}; falling back to ${englishVoice}.`);
+          audioBytes = await synthesizeMiniMax({
+            apiKey,
+            model,
+            voice: englishVoice,
+            text: speechText,
+            speed,
+            languageBoost
+          });
+        }
 
         await fs.writeFile(mp3Path, audioBytes);
         await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", mp3Path, "-ar", "44100", "-ac", "1", wavPath], {

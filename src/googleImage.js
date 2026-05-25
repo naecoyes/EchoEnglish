@@ -5,20 +5,21 @@ const { initImageManifest, updateImageManifest } = require("./outputManifests");
 const { fetchJsonWithPolicy } = require("./apiLimiter");
 const { validateImageOrThrow } = require("./imageQuality");
 
-async function generateImages({ scenes, outputDir, apiKey, baseUrl, model }) {
+async function generateImages({ scenes, outputDir, apiKey, baseUrl, model, onProgress }) {
   if (!apiKey) throw new Error("Google API key is required for Imagen generation.");
   const imagesDir = path.join(outputDir, "images");
   await ensureDir(imagesDir);
   await initImageManifest(outputDir, scenes);
 
   const results = [];
-  for (const scene of scenes) {
+  for (const [index, scene] of scenes.entries()) {
     const cachedPath = await findExistingImage(imagesDir, scene.id);
     if (cachedPath) {
       const quality = await validateCachedImage(cachedPath, imagesDir, scene.id);
       if (quality) {
         await updateImageManifest(outputDir, scene.id, { status: "completed", imagePath: cachedPath, quality, error: null });
         results.push({ sceneId: scene.id, imagePath: cachedPath, cached: true });
+        await reportProgress(onProgress, { sceneId: scene.id, status: "completed", completed: results.length, total: scenes.length, index });
         continue;
       }
       await updateImageManifest(outputDir, scene.id, {
@@ -29,6 +30,7 @@ async function generateImages({ scenes, outputDir, apiKey, baseUrl, model }) {
     }
 
     await updateImageManifest(outputDir, scene.id, { status: "running", attempts: 0, error: null });
+    await reportProgress(onProgress, { sceneId: scene.id, status: "running", completed: results.length, total: scenes.length, index });
     try {
       const outputPath = await generateValidatedImage({
         scene,
@@ -40,12 +42,18 @@ async function generateImages({ scenes, outputDir, apiKey, baseUrl, model }) {
       });
       await updateImageManifest(outputDir, scene.id, { status: "completed", imagePath: outputPath, error: null });
       results.push({ sceneId: scene.id, imagePath: outputPath });
+      await reportProgress(onProgress, { sceneId: scene.id, status: "completed", completed: results.length, total: scenes.length, index });
     } catch (error) {
       await updateImageManifest(outputDir, scene.id, { status: "failed", imagePath: null, error: error.message });
       throw error;
     }
   }
   return results;
+}
+
+async function reportProgress(onProgress, progress) {
+  if (typeof onProgress !== "function") return;
+  await onProgress(progress);
 }
 
 async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model }) {
@@ -57,7 +65,7 @@ async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, bas
         apiKey,
         baseUrl,
         model,
-        prompt: scene.imagePrompt || scene.visual || "cinematic story background"
+        prompt: scene.imagePrompt || buildPrompt(scene)
       });
       const outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
       await fs.writeFile(outputPath, bytes);
@@ -124,6 +132,18 @@ function detectImageExtension(bytes) {
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return ".png";
   if (bytes.slice(0, 4).toString("ascii") === "RIFF" && bytes.slice(8, 12).toString("ascii") === "WEBP") return ".webp";
   return ".png";
+}
+
+function buildPrompt(scene) {
+  return [
+    "Create a 16:9 photorealistic cinematic still image for an English shadowing video.",
+    scene.title ? `Video title: ${scene.title}.` : "",
+    scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
+    scene.visualStyle ? `Visual style: ${scene.visualStyle}.` : "",
+    `Scene: ${scene.visual || "clear documentary story moment"}.`,
+    "Use realistic documentary photography, one clear focal subject, real location, motivated cinematic light, 35mm lens look, high detail, natural color grade.",
+    "Leave the lower third visually clean for subtitles. No text, no readable signs, no subtitles, no logos, no watermark, no UI, no cartoon, no vector art, no PPT slide."
+  ].filter(Boolean).join(" ");
 }
 
 async function deleteSceneImage(imagesDir, sceneId) {

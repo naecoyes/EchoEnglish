@@ -102,18 +102,31 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
 
 function buildStoryPrompt(topic, minutes, outline, template = null) {
   const factualMode = isFactualTemplate(template) || outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
+  const podcastMode = template?.id === "podcast-dialogue";
   return [
-    "Write the complete source JSON for a pure English story narration video.",
+    podcastMode
+      ? "Write the complete source JSON for a two-host English learning podcast video."
+      : "Write the complete source JSON for a pure English story narration video.",
     template ? formatTemplateForPrompt(template) : "",
     "Important rules:",
-    "- Pure story mode only. Do not include Part, Chapter, Listen, Shadow, Review, teaching instructions, or repeated rounds.",
-    "- The English narration must be continuous story prose in short beginner-friendly sentences.",
+    podcastMode
+      ? "- Podcast mode: write natural two-host dialogue. Each sentence should begin with Host A: or Host B: only when it helps clarity."
+      : "- Pure story mode only. Do not include Part, Chapter, Listen, Shadow, Review, teaching instructions, or repeated rounds.",
+    podcastMode
+      ? "- The English narration must alternate between two speakers, but each turn must stay short and beginner-friendly."
+      : "- The English narration must be continuous story prose in short beginner-friendly sentences.",
+    podcastMode
+      ? "- For podcast mode, every scene should still have exactly 4 sentences, normally alternating Host A, Host B, Host A, Host B."
+      : "",
     "- Use 28-30 internal scenes. Each scene has exactly 4 English sentences.",
     "- The story should naturally last about 15 minutes when read slowly with short pauses.",
     "- The video needs 112-120 sentence-level background images, so every sentence must describe a visually useful moment.",
-    "- Every scene needs Chinese sentence translations, 3 useful vocabulary notes, and a photorealistic image prompt.",
+    "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a photorealistic image prompt.",
+    "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
     "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
-    "- Image prompts must describe a real photographed/cinematic background, no text, no subtitles, no logo, no UI.",
+    "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition that leaves the lower third clean for subtitles.",
+    "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no UI.",
+    "- Avoid repeated generic wording. Each scene prompt must have a distinct place, object, camera angle, or action.",
     factualMode
       ? "- Factual documentary mode is required. Do not create fictional protagonists, invented employees, invented dialogue, private emotions, or scenes that are not supported by the outline/search context."
       : "- Fictional story mode is allowed only when the topic is not about real history, companies, people, or products.",
@@ -129,7 +142,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "summary": "string",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
-    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "string", "sentences": ["English sentence"], "translations": ["中文翻译"], "vocabulary": [["word or phrase", "中文释义"]]}',
+    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "80-120 word English photorealistic prompt", "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
     "  ]",
     "}",
     `Topic: ${topic}`,
@@ -140,24 +153,50 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
 }
 
 async function callChatJson(config, prompt, maxTokens) {
+  const isXiaomi = config.provider === "xiaomi";
+  const model = isXiaomi ? String(config.model || "").trim().toLowerCase() : config.model;
+  const headers = isXiaomi
+    ? {
+        "api-key": config.apiKey,
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      }
+    : {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      };
+  const body = isXiaomi
+    ? {
+        model,
+        messages: [
+          {
+            role: "system",
+            content: "You are a careful JSON generator for English learning story videos. Return JSON only."
+          },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.7,
+        max_completion_tokens: maxTokens,
+        stream: false,
+        thinking: { type: "disabled" }
+      }
+    : {
+        model,
+        messages: [
+          {
+            role: "system",
+            content: "You are a careful JSON generator for English learning story videos. Return JSON only."
+          },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: maxTokens
+      };
+
   const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        {
-          role: "system",
-          content: "You are a careful JSON generator for English learning story videos. Return JSON only."
-        },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: maxTokens
-    })
+    headers,
+    body: JSON.stringify(body)
   });
 
   const data = await response.json().catch(() => null);
@@ -234,6 +273,9 @@ function normalizeStory(input, context) {
     .slice(0, 30);
 
   if (normalizedSections.length < 28) {
+    if (String(context.source || "").startsWith("llm")) {
+      throw new Error(`LLM draft was incomplete: expected 28-30 scenes with 4 translated sentences each, received ${normalizedSections.length}. Try again or revise the prompt/model settings.`);
+    }
     return fallbackStoryFromOutline(outline, context);
   }
 
@@ -265,7 +307,12 @@ function normalizeStory(input, context) {
 }
 
 function normalizeSection(section, index, storyTitle) {
-  const sentences = normalizeStringArray(section?.sentences, []).map(cleanSentence).filter(Boolean).slice(0, 4);
+  const parsedSentences = normalizeStringArray(section?.sentences, [])
+    .map(parseSpeakerSentence)
+    .filter((entry) => entry.text)
+    .slice(0, 4);
+  const sentences = parsedSentences.map((entry) => cleanSentence(entry.text)).filter(Boolean);
+  const speakers = parsedSentences.map((entry) => entry.speaker || null);
   const translations = normalizeStringArray(section?.translations, []).slice(0, sentences.length);
   const vocabulary = Array.isArray(section?.vocabulary)
     ? section.vocabulary.map((pair) => [cleanText(pair?.[0]), cleanText(pair?.[1]), cleanText(pair?.[2])]).filter(([word, zh]) => word && zh).slice(0, 4)
@@ -280,8 +327,21 @@ function normalizeSection(section, index, storyTitle) {
     visual,
     imagePrompt: cleanText(section?.imagePrompt) || buildPhotoPrompt(storyTitle, visual, sentences),
     sentences,
+    speakers,
     translations: translations.length === sentences.length ? translations : sentences.map(() => "中文释义待补充。"),
     vocabulary: vocabulary.length ? vocabulary : fallbackVocabulary(sentences.join(" "))
+  };
+}
+
+function parseSpeakerSentence(value) {
+  const text = cleanText(value);
+  const match = /^(host|speaker)\s*([ab12])\s*[:：-]\s*(.+)$/i.exec(text);
+  if (!match) return { text, speaker: null };
+  const marker = match[2].toLowerCase();
+  const speaker = marker === "b" || marker === "2" ? "host-b" : "host-a";
+  return {
+    text: cleanText(match[3]),
+    speaker
   };
 }
 
@@ -447,12 +507,15 @@ function formatTemplateForPrompt(template) {
 
 function buildPhotoPrompt(storyTitle, visual, sentences = []) {
   return [
-    "16:9 photorealistic cinematic still photo for an English story video background.",
+    "16:9 photorealistic cinematic still photograph for an English shadowing video background.",
     `Story: ${storyTitle}.`,
     `Scene: ${visual}.`,
     sentences.length ? `Moment: ${sentences.slice(0, 3).join(" ")}` : "",
-    "Natural light, realistic people, real location, emotional but subtle, full-screen background.",
-    "No text, no subtitles, no captions, no watermark, no logo, no UI elements."
+    "Shot direction: one clear main subject, believable real-world location, visible story object, natural human scale, documentary realism.",
+    "Camera: 35mm or 50mm lens look, cinematic depth of field, high dynamic range, realistic texture, no oversaturated fantasy colors.",
+    "Composition: strong upper and middle frame detail, clean lower third for bilingual subtitles, no crowded text-like patterns.",
+    "Lighting: natural or motivated cinematic light, soft contrast, realistic shadows, professional production still quality.",
+    "No text, no subtitles, no captions, no watermark, no logo, no UI elements, no cartoon, no flat vector art, no slide design."
   ].filter(Boolean).join(" ");
 }
 
@@ -480,12 +543,14 @@ async function getLlmConfig() {
   const settings = await getEffectiveSettings();
   if (settings.provider === "xiaomi" && settings.xiaomi?.apiKey) {
     return {
+      provider: "xiaomi",
       baseUrl: settings.xiaomi.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
       model: settings.xiaomi.textModel || "MiMo-V2.5-Pro",
       apiKey: settings.xiaomi.apiKey
     };
   }
   return {
+    provider: "openai-compatible",
     baseUrl: settings.llm.baseUrl || DEFAULT_LLM.baseUrl,
     model: normalizeProviderModel(settings.llm.model || DEFAULT_LLM.model, settings.llm.baseUrl || DEFAULT_LLM.baseUrl),
     apiKey: settings.llm.apiKey || ""

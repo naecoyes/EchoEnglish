@@ -60,6 +60,7 @@ async function generateStoryWorkflow(options = {}) {
   }
 
   let readingItems = buildReadingItems(story);
+  readingItems = assignPodcastVoices(readingItems, settings, options);
   let audioSummary = null;
   let musicSummary = null;
 
@@ -74,7 +75,7 @@ async function generateStoryWorkflow(options = {}) {
           outputDir,
           apiKey: settings.xiaomi?.apiKey,
           baseUrl: settings.xiaomi?.baseUrl,
-          model: settings.xiaomi?.ttsModel || "mimo-v2.5-tts",
+          model: settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
           voice: options.xiaomiVoice || "alloy",
           speed: Number(options.speed || 1.0),
           requestIntervalMs: options.ttsRequestIntervalMs,
@@ -151,7 +152,7 @@ async function generateStoryWorkflow(options = {}) {
 
     const nextScriptJson = {
     ...story,
-    readingOrder: readingItems.map(({ id, kind, text, ttsText, language, pauseAfterSeconds, startSeconds, endSeconds, sectionIndex, sentenceIndex, vocabularyIndex, word, translation, phonetic }) => ({
+    readingOrder: readingItems.map(({ id, kind, text, ttsText, language, pauseAfterSeconds, startSeconds, endSeconds, sectionIndex, sentenceIndex, vocabularyIndex, word, translation, phonetic, speaker, speakerName, voice }) => ({
       id,
       kind,
       text,
@@ -165,7 +166,10 @@ async function generateStoryWorkflow(options = {}) {
       vocabularyIndex,
       word,
       translation,
-      phonetic
+      phonetic,
+      speaker,
+      speakerName,
+      voice
     })),
     outputs
   };
@@ -189,7 +193,8 @@ async function generateStoryWorkflow(options = {}) {
         outputDir,
         apiKey: settings.google?.apiKey,
         baseUrl: settings.google?.baseUrl,
-        model: options.googleImageModel || settings.google?.imageModel
+        model: options.googleImageModel || settings.google?.imageModel,
+        onProgress: (progress) => reportImageProgress(options, logs, progress)
       })
       : await generateImages({
         scenes,
@@ -197,7 +202,8 @@ async function generateStoryWorkflow(options = {}) {
         apiKey: effectiveApiKey,
         model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
         aspectRatio: "16:9",
-        promptOptimizer: true
+        promptOptimizer: true,
+        onProgress: (progress) => reportImageProgress(options, logs, progress)
       });
     return {
       status: "completed",
@@ -294,6 +300,35 @@ async function generateStoryWorkflow(options = {}) {
   };
 }
 
+function assignPodcastVoices(readingItems, settings, options) {
+  const ttsProvider = resolveTtsProvider(options.ttsProvider, options.apiKey || settings.minimaxApiKey, settings);
+  const voiceMap = getPodcastVoiceMap(ttsProvider, settings, options);
+  return readingItems.map((item) => {
+    if (item.speaker !== "host-a" && item.speaker !== "host-b") return item;
+    const voice = voiceMap[item.speaker];
+    return voice ? { ...item, voice } : item;
+  });
+}
+
+function getPodcastVoiceMap(provider, settings, options) {
+  if (provider === "google") {
+    return {
+      "host-a": settings.google?.podcastHostAVoice || settings.google?.voice || "Kore",
+      "host-b": settings.google?.podcastHostBVoice || "Puck"
+    };
+  }
+  if (provider === "xiaomi") {
+    return {
+      "host-a": settings.xiaomi?.podcastHostAVoice || options.xiaomiVoice || "alloy",
+      "host-b": settings.xiaomi?.podcastHostBVoice || "echo"
+    };
+  }
+  return {
+    "host-a": settings.minimax?.podcastHostAVoice || options.minimaxVoice || settings.minimax?.englishVoice || "English_Graceful_Lady",
+    "host-b": settings.minimax?.podcastHostBVoice || "English_Trustworthy_Man"
+  };
+}
+
 async function runStage(options, stageId, fn) {
   await notifyStage(options, stageId, "running");
   try {
@@ -320,6 +355,18 @@ async function notifyStage(options, stageId, status, patch = {}) {
   if (typeof options.onStage === "function") {
     await options.onStage(stageId, status, patch);
   }
+}
+
+async function reportImageProgress(options, logs, progress) {
+  const completed = Number(progress.completed || 0);
+  const total = Number(progress.total || 0);
+  if (progress.status === "completed") {
+    pushLog(logs, `Image ${completed}/${total}: ${progress.sceneId}`);
+  }
+  await notifyStage(options, "images", "running", {
+    counts: { completed, total },
+    currentSceneId: progress.sceneId
+  });
 }
 
 function inferStagePatch(stageId, result) {
@@ -450,9 +497,15 @@ function getUniqueImageScenes(story) {
     for (let beatIndex = 0; beatIndex < beatCount; beatIndex += 1) {
       const key = `${baseIndex}:${variantIndex}:${beatIndex}`;
       if (seen.has(key)) continue;
+      const moment = getSectionBeatMoment(story, section, beatIndex);
       seen.set(key, {
         id: buildSceneImageId(baseIndex, variantIndex, beatIndex),
         visual: section.visual,
+        title: story.title,
+        contentMode: story.contentMode,
+        templateTitle: story.template?.title,
+        visualStyle: story.storyboardDesign?.visualStyle || story.outline?.visualStyle,
+        moment,
         imagePrompt: buildBeatImagePrompt(story, section, beatIndex)
       });
     }
@@ -467,14 +520,32 @@ function buildSceneImageId(baseIndex, variantIndex, beatIndex) {
   return `scene-${String(baseIndex + 1).padStart(3, "0")}-${suffix}-${String(beatIndex + 1).padStart(2, "0")}`;
 }
 
-function buildBeatImagePrompt(story, section, beatIndex) {
+function getSectionBeatMoment(story, section, beatIndex) {
   const sentences = section.sentences || [];
   const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story.mode === "pure-story" ? 3 : 2;
-  const moment = sentences.slice(beatIndex * beatSize, beatIndex * beatSize + beatSize).join(" ");
+  return sentences.slice(beatIndex * beatSize, beatIndex * beatSize + beatSize).join(" ");
+}
+
+function buildBeatImagePrompt(story, section, beatIndex) {
+  const moment = getSectionBeatMoment(story, section, beatIndex);
+  const visualStyle = story.storyboardDesign?.visualStyle || story.outline?.visualStyle || "photorealistic cinematic documentary still";
+  const factual = story.contentMode === "factual-documentary" || story.template?.contentMode === "factual-documentary";
+  const podcast = story.template?.id === "podcast-dialogue";
   const parts = [
-    section.imagePrompt,
-    moment ? `Specific moment for this background: ${moment}` : "",
-    "Make this image visually distinct from other beats in the same scene."
+    "Create one 16:9 photorealistic cinematic still image for an English shadowing video.",
+    `Video title: ${story.title}.`,
+    story.template?.title ? `Video type: ${story.template.title}.` : "",
+    `Overall visual style: ${visualStyle}.`,
+    section.imagePrompt ? `Base scene prompt: ${section.imagePrompt}` : "",
+    section.visual ? `Scene setting: ${section.visual}` : "",
+    moment ? `Exact sentence moment to visualize: ${moment}` : "",
+    factual ? "Factual documentary mode: show public, realistic, verifiable-feeling environments; avoid fictional private scenes and invented characters." : "",
+    podcast ? "Podcast mode: show two hosts in a premium podcast studio, microphones, warm desk lighting, topic-related background screen with no readable text." : "",
+    "Camera direction: realistic documentary photography, 35mm lens look, subtle depth of field, natural perspective, professional lighting, detailed foreground and background.",
+    "Composition: one clear focal subject, strong visual story action, clean lower third for subtitles, no clutter over the bottom caption zone.",
+    "Image quality: high detail, sharp but natural, cinematic color grade, realistic skin/material texture, no black frames, no abstract gradients.",
+    "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no UI, no slide deck, no cartoon, no flat vector illustration.",
+    `Distinctness: make this beat visually different from nearby beats by changing camera angle, distance, subject pose, object focus, or lighting. Beat ${beatIndex + 1}.`
   ];
   return parts.filter(Boolean).join(" ");
 }

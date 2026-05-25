@@ -454,7 +454,7 @@ function getActiveConfigBadges(config) {
   if (provider === "xiaomi") {
     return [
       "Provider: Xiaomi MiMo",
-      `Text: ${config?.xiaomi?.textModel || settings.xiaomi?.textModel || "mimo-v2.5-pro"}`,
+      `Text: ${config?.xiaomi?.textModel || settings.xiaomi?.textModel || "MiMo-V2.5-Pro"}`,
       `TTS: ${formatTtsConfig(config, settings)}`,
       `Image: ${formatImageConfig(config, settings)}`,
       `Music: ${settings.models?.music || "music-2.6"}`,
@@ -474,7 +474,7 @@ function getActiveConfigBadges(config) {
 function formatTtsConfig(config, settings) {
   const provider = settings.media?.ttsProvider || config?.media?.ttsProvider || "minimax";
   if (provider === "google") return `Google ${config?.google?.ttsModel || settings.google?.ttsModel || "gemini-2.5-flash-preview-tts"}`;
-  if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "mimo-v2.5-tts"}`;
+  if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS"}`;
   return settings.models?.tts || "speech-2.8-hd";
 }
 
@@ -698,12 +698,73 @@ function OutlineCard({ outline }) {
 }
 
 function PreviewPage({ output }) {
+  const slug = slugFromOutputs(output?.outputs);
+  const [videoVersion, setVideoVersion] = useState(0);
+  const [rerenderState, setRerenderState] = useState("");
+  const [stats, setStats] = useState(null);
+
+  useEffect(() => {
+    setVideoVersion(0);
+    setRerenderState("");
+    setStats(null);
+    if (!output?.outputs?.scriptJson) return undefined;
+    let cancelled = false;
+    Promise.all([
+      fetchJson(`/api/media-info?path=${encodeURIComponent(output.outputs.video)}`).catch(() => ({ durationSeconds: 0 })),
+      fetchJson(output.outputs.scriptJson).catch(() => null)
+    ]).then(([media, script]) => {
+      if (cancelled) return;
+      const sections = script?.sections || [];
+      const sentenceCount = sections.reduce((total, section) => total + (section.sentences?.length || 0), 0);
+      const vocabularyCount = Array.isArray(script?.vocabularyReview)
+        ? script.vocabularyReview.length
+        : sections.reduce((total, section) => total + (section.vocabulary?.length || 0), 0);
+      setStats({
+        duration: media.durationSeconds || 0,
+        sentenceCount,
+        vocabularyCount
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [output?.outputs?.scriptJson, output?.outputs?.video]);
+
+  async function handleRerenderUi() {
+    if (!slug) return;
+    setRerenderState("Re-rendering slides and final MP4. No model APIs are called.");
+    try {
+      const result = await fetchJson(`/api/outputs/${encodeURIComponent(slug)}/rerender-ui`, { method: "POST" });
+      setRerenderState(`Re-rendered ${result.frameCount || 0} frames. Video refreshed.`);
+      setVideoVersion(Date.now());
+    } catch (error) {
+      setRerenderState(error.message);
+    }
+  }
+
   return (
     <section className="glass-card content-panel preview-panel">
-      <p className="section-kicker">Preview</p>
-      <h2>{output?.title || "No video selected"}</h2>
+      <div className="panel-title-row">
+        <div>
+          <p className="section-kicker">Preview</p>
+          <h2>{output?.title || "No video selected"}</h2>
+        </div>
+        {output?.outputs?.video && (
+          <button className="ghost-action" type="button" onClick={handleRerenderUi}>
+            Re-render Video UI
+          </button>
+        )}
+      </div>
+      {output?.outputs?.video && (
+        <div className="preview-stats">
+          <span>Duration: {formatTime(stats?.duration || 0)}</span>
+          <span>Sentences: {stats?.sentenceCount || 0}</span>
+          <span>Vocabulary: {stats?.vocabularyCount || 0}</span>
+        </div>
+      )}
+      {rerenderState && <p className="preview-message">{rerenderState}</p>}
       {output?.outputs?.video ? (
-        <VideoPlayer src={output.outputs.video} title={output.title} />
+        <VideoPlayer src={output.outputs.video} cacheKey={videoVersion} title={output.title} />
       ) : (
         <EmptyState title="Select or generate a video" text="Open a recent output or generate a new story to preview final.mp4 here." />
       )}
@@ -711,7 +772,7 @@ function PreviewPage({ output }) {
   );
 }
 
-function VideoPlayer({ src, title }) {
+function VideoPlayer({ src, title, cacheKey = 0 }) {
   const videoRef = useRef(null);
   const scrubberRef = useRef(null);
   const draggingRef = useRef(false);
@@ -734,7 +795,7 @@ function VideoPlayer({ src, title }) {
     return () => {
       cancelled = true;
     };
-  }, [src]);
+  }, [src, cacheKey]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -756,7 +817,7 @@ function VideoPlayer({ src, title }) {
       video.removeEventListener("canplay", syncDuration);
       video.removeEventListener("timeupdate", syncTime);
     };
-  }, [src]);
+  }, [src, cacheKey]);
 
   function seekTo(nextTime) {
     const video = videoRef.current;
@@ -815,10 +876,9 @@ function VideoPlayer({ src, title }) {
     <div className="video-stage">
       <video
         ref={videoRef}
-        src={src}
+        src={cacheKey ? `${src}?ui=${cacheKey}` : src}
         controls
         playsInline
-        title={title}
         onTimeUpdate={(event) => setTime(event.currentTarget.currentTime)}
         onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
         onDurationChange={(event) => setDuration(event.currentTarget.duration || duration || 0)}
@@ -874,6 +934,39 @@ function OutputsPage({ output }) {
 }
 
 function RecentPage({ items, refresh, openRecent }) {
+  async function renameOutput(item) {
+    const title = window.prompt("Rename output", item.title || "");
+    if (title === null) return;
+    const nextTitle = title.trim();
+    if (!nextTitle || nextTitle === item.title) return;
+    try {
+      await fetchJson(`/api/outputs/${encodeURIComponent(item.slug)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: nextTitle })
+      });
+      await refresh();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  async function deleteOutput(item) {
+    const ok = window.confirm(`Delete "${item.title}" and all generated files in outputs/${item.slug}?`);
+    if (!ok) return;
+    try {
+      await fetchJson(`/api/outputs/${encodeURIComponent(item.slug)}`, { method: "DELETE" });
+      const nextItems = await refresh();
+      const first = nextItems?.[0];
+      if (first) {
+        window.localStorage.setItem("echoenglish:lastOutput", first.slug);
+      } else {
+        window.localStorage.removeItem("echoenglish:lastOutput");
+      }
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
   return (
     <section className="glass-card content-panel">
       <div className="panel-title-row">
@@ -883,12 +976,24 @@ function RecentPage({ items, refresh, openRecent }) {
         </div>
         <button className="ghost-action" type="button" onClick={refresh}>Refresh</button>
       </div>
-      <div className="recent-grid">
+      <div className="recent-list">
         {items.length ? items.map((item) => (
-          <button key={item.slug} className="recent-card" type="button" onClick={() => openRecent(item)}>
-            <strong>{item.title}</strong>
-            <span>{new Date(item.updatedAt).toLocaleString()}</span>
-          </button>
+          <article key={item.slug} className="recent-row">
+            <button className="recent-main" type="button" onClick={() => openRecent(item)}>
+              <strong>{item.title}</strong>
+              <span>{item.slug}</span>
+            </button>
+            <div className="recent-meta">
+              <span className={`status-dot ${item.status || "completed"}`}>{item.status || "completed"}</span>
+              <span>{new Date(item.updatedAt).toLocaleString()}</span>
+            </div>
+            <div className="recent-actions">
+              <button type="button" onClick={() => openRecent(item, "/preview")} disabled={!item.outputs?.video}>Preview</button>
+              <button type="button" onClick={() => openRecent(item, "/outputs")}>Outputs</button>
+              <button type="button" onClick={() => renameOutput(item)}>Rename</button>
+              <button className="danger-action" type="button" onClick={() => deleteOutput(item)}>Delete</button>
+            </div>
+          </article>
         )) : <EmptyState title="No completed videos" text="Generated videos will appear here." />}
       </div>
     </section>
@@ -908,7 +1013,8 @@ function StatusPage({ status, logs, progress, job, onContinue, onRefresh }) {
           {failedStage && <p>Failed stage: {failedStage}{job?.errorType ? ` · ${job.errorType}` : ""}</p>}
         </div>
         <div className="status-actions">
-          {job?.outputs?.jobState && <a className="ghost-action compact-action" href={job.outputs.jobState} target="_blank" rel="noreferrer">Open Output Folder State</a>}
+          {job?.slug && <a className="ghost-action compact-action" href={`/outputs?output=${encodeURIComponent(job.slug)}`}>Open Outputs</a>}
+          {job?.outputs?.jobState && <a className="ghost-action compact-action" href={job.outputs.jobState}>Open State JSON</a>}
           {job?.id && <button className="ghost-action compact-action" type="button" onClick={onRefresh}>Refresh State</button>}
           {canContinue && (
             <button className="primary-action compact-action" type="button" onClick={onContinue}>
@@ -928,7 +1034,7 @@ function StatusPage({ status, logs, progress, job, onContinue, onRefresh }) {
       {job?.outputs?.jobState && (
         <div className="saved-state-row">
           <span>{job?.recoverable ? "Recoverable failure. Wait for quota/API recovery, then continue generation." : "Progress is saved locally for quota recovery."}</span>
-          <a href={job.outputs.jobState} target="_blank" rel="noreferrer">Open job-state.json</a>
+          <a href={job.outputs.jobState}>Open job-state.json</a>
         </div>
       )}
       <pre className="log-box">{logs.join("\n")}</pre>
@@ -982,6 +1088,8 @@ function SettingsPage({ onSaved }) {
     minimax: {
       englishVoice: "",
       chineseVoice: "",
+      podcastHostAVoice: "",
+      podcastHostBVoice: "",
       musicTrackCount: 3
     },
     media: {
@@ -990,13 +1098,15 @@ function SettingsPage({ onSaved }) {
     },
     xiaomiApiKey: "",
     xiaomiBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
-    xiaomiTextModel: "mimo-v2.5-pro",
-    xiaomiTtsModel: "mimo-v2.5-tts",
+    xiaomiTextModel: "MiMo-V2.5-Pro",
+    xiaomiTtsModel: "MiMo-V2.5-TTS",
     googleApiKey: "",
     googleBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
     googleImageModel: "imagen-4.0-generate-001",
     googleTtsModel: "gemini-2.5-flash-preview-tts",
-    googleVoice: "Kore"
+    googleVoice: "Kore",
+    googlePodcastHostAVoice: "Kore",
+    googlePodcastHostBVoice: "Puck"
   });
 
   useEffect(() => {
@@ -1021,6 +1131,8 @@ function SettingsPage({ onSaved }) {
       minimax: {
         englishVoice: next.minimax?.englishVoice || "",
         chineseVoice: next.minimax?.chineseVoice || "",
+        podcastHostAVoice: next.minimax?.podcastHostAVoice || next.minimax?.englishVoice || "",
+        podcastHostBVoice: next.minimax?.podcastHostBVoice || "",
         musicTrackCount: next.minimax?.musicTrackCount || 3
       },
       media: {
@@ -1028,12 +1140,14 @@ function SettingsPage({ onSaved }) {
         imageProvider: next.media?.imageProvider || "minimax"
       },
       xiaomiBaseUrl: next.xiaomi?.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
-      xiaomiTextModel: next.xiaomi?.textModel || "mimo-v2.5-pro",
-      xiaomiTtsModel: next.xiaomi?.ttsModel || "mimo-v2.5-tts",
+      xiaomiTextModel: next.xiaomi?.textModel || "MiMo-V2.5-Pro",
+      xiaomiTtsModel: next.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
       googleBaseUrl: next.google?.baseUrl || "https://generativelanguage.googleapis.com/v1beta",
       googleImageModel: next.google?.imageModel || "imagen-4.0-generate-001",
       googleTtsModel: next.google?.ttsModel || "gemini-2.5-flash-preview-tts",
-      googleVoice: next.google?.voice || "Kore"
+      googleVoice: next.google?.voice || "Kore",
+      googlePodcastHostAVoice: next.google?.podcastHostAVoice || next.google?.voice || "Kore",
+      googlePodcastHostBVoice: next.google?.podcastHostBVoice || "Puck"
     }));
   }
 
@@ -1074,6 +1188,8 @@ function SettingsPage({ onSaved }) {
         minimax: {
           englishVoice: profile.minimax?.englishVoice || current.minimax.englishVoice,
           chineseVoice: profile.minimax?.chineseVoice || current.minimax.chineseVoice,
+          podcastHostAVoice: profile.minimax?.podcastHostAVoice || current.minimax.podcastHostAVoice,
+          podcastHostBVoice: profile.minimax?.podcastHostBVoice || current.minimax.podcastHostBVoice,
           musicTrackCount: profile.minimax?.musicTrackCount || current.minimax.musicTrackCount
         }
       } : {})
@@ -1109,7 +1225,9 @@ function SettingsPage({ onSaved }) {
             baseUrl: form.googleBaseUrl,
             imageModel: form.googleImageModel,
             ttsModel: form.googleTtsModel,
-            voice: form.googleVoice
+            voice: form.googleVoice,
+            podcastHostAVoice: form.googlePodcastHostAVoice,
+            podcastHostBVoice: form.googlePodcastHostBVoice
           },
           media: form.media,
           search: {
@@ -1287,7 +1405,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   Text Model
                   <select value={form.xiaomiTextModel} onChange={(event) => setForm({ ...form, xiaomiTextModel: event.target.value })}>
-                    {(summary?.xiaomi?.textModels || ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni"]).map((m) => (
+                    {(summary?.xiaomi?.textModels || ["MiMo-V2.5-Pro", "MiMo-V2.5", "MiMo-V2-Pro", "MiMo-V2-Omni"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1295,7 +1413,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   TTS Model
                   <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                    {(summary?.xiaomi?.ttsModels || ["mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign", "mimo-v2.5-tts", "mimo-v2-tts"]).map((m) => (
+                    {(summary?.xiaomi?.ttsModels || ["MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1447,7 +1565,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   Xiaomi Text Model
                   <select value={form.xiaomiTextModel} onChange={(event) => setForm({ ...form, xiaomiTextModel: event.target.value })}>
-                    {(summary?.xiaomi?.textModels || ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni"]).map((m) => (
+                    {(summary?.xiaomi?.textModels || ["MiMo-V2.5-Pro", "MiMo-V2.5", "MiMo-V2-Pro", "MiMo-V2-Omni"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1472,7 +1590,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   Xiaomi TTS Model
                   <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                    {(summary?.xiaomi?.ttsModels || ["mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign", "mimo-v2.5-tts", "mimo-v2-tts"]).map((m) => (
+                    {(summary?.xiaomi?.ttsModels || ["MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1486,8 +1604,32 @@ function SettingsPage({ onSaved }) {
                   <input value={form.minimax.englishVoice} onChange={(event) => updateMiniMax("englishVoice", event.target.value)} />
                 </label>
                 <label>
+                  Podcast Host A Voice
+                  <input value={form.minimax.podcastHostAVoice} onChange={(event) => updateMiniMax("podcastHostAVoice", event.target.value)} />
+                </label>
+                <label>
+                  Podcast Host B Voice
+                  <input value={form.minimax.podcastHostBVoice} onChange={(event) => updateMiniMax("podcastHostBVoice", event.target.value)} />
+                </label>
+                <label>
                   Google Voice
                   <select value={form.googleVoice} onChange={(event) => setForm({ ...form, googleVoice: event.target.value })}>
+                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                      <option key={voice} value={voice}>{voice}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Google Podcast Host A
+                  <select value={form.googlePodcastHostAVoice} onChange={(event) => setForm({ ...form, googlePodcastHostAVoice: event.target.value })}>
+                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                      <option key={voice} value={voice}>{voice}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Google Podcast Host B
+                  <select value={form.googlePodcastHostBVoice} onChange={(event) => setForm({ ...form, googlePodcastHostBVoice: event.target.value })}>
                     {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
                       <option key={voice} value={voice}>{voice}</option>
                     ))}

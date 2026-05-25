@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
 const { generateStoryWorkflow } = require("./storyWorkflow");
+const { composeStoryVideo } = require("./storyVideoComposer");
 const { createPureStory, createStoryOutline, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
 const { renderMarkdown } = require("./renderers");
 const { MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
@@ -197,6 +198,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { items: await listRecentOutputs() });
     }
 
+    const outputApiMatch = /^\/api\/outputs\/([^/]+)$/.exec(url.pathname);
+    if (outputApiMatch && req.method === "PATCH") {
+      const body = await readJson(req);
+      return updateOutputMetadata(res, outputApiMatch[1], body);
+    }
+
+    if (outputApiMatch && req.method === "DELETE") {
+      return deleteOutput(res, outputApiMatch[1]);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/generate-story-video") {
       const body = await readJson(req);
       return await startStoryJob(res, body);
@@ -272,6 +283,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/jobs/latest") {
       return sendJson(res, await serializeLatestJob());
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/rerender-ui")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await rerenderOutputUi(res, slug);
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/continue")) {
@@ -450,6 +466,10 @@ function runStoryJob(job) {
         onStage: async (stageId, status, patch) => {
           markStage(job.stages, stageId, status, patch);
           job.failedStage = firstFailedStage(job.stages);
+          if (!job.failedStage && status === "running") {
+            job.error = null;
+            job.errorType = null;
+          }
           job.recoverable = Boolean(Object.values(job.stages).some((stage) => stage.status === "failed" && stage.recoverable));
           job.updatedAt = new Date().toISOString();
           await persistJob(job);
@@ -672,6 +692,20 @@ async function listPersistedJobs() {
 function normalizePersistedJob(job) {
   job.stages = createStages(job.stages);
   job.logs = Array.isArray(job.logs) ? job.logs : [];
+  if (job.status === "running" || job.status === "queued") {
+    const interruptedStage = firstRunningStage(job.stages) || firstPendingAfterCompleted(job.stages) || "draft";
+    const message = "Generation was interrupted before completion. Click Continue Generation to resume from saved files.";
+    job.status = "failed_recoverable";
+    job.error = job.error || message;
+    job.errorType = job.errorType || "network_error";
+    job.recoverable = true;
+    job.failedStage = interruptedStage;
+    markStage(job.stages, interruptedStage, "failed", {
+      error: message,
+      errorType: "network_error",
+      recoverable: true
+    });
+  }
   if ((job.status === "failed" || job.status === "failed_recoverable") && job.error) {
     const classification = classifyError(job.error);
     job.errorType = job.errorType || classification.type;
@@ -698,6 +732,14 @@ function normalizePersistedJob(job) {
   }
 }
 
+function firstRunningStage(stages = {}) {
+  return Object.keys(stages).find((id) => stages[id]?.status === "running") || null;
+}
+
+function firstPendingAfterCompleted(stages = {}) {
+  return Object.keys(stages).find((id) => stages[id]?.status === "pending") || null;
+}
+
 function inferFailedStageFromLogs(logs = [], error = "") {
   const text = `${logs.join("\n")}\n${error}`.toLowerCase();
   if (text.includes("generating scene images") || text.includes("image api")) return "images";
@@ -709,7 +751,7 @@ function inferFailedStageFromLogs(logs = [], error = "") {
   return null;
 }
 
-async function listRecentOutputs(limit = 8) {
+async function listRecentOutputs(limit = 50) {
   let entries = [];
   try {
     entries = await fs.readdir(OUTPUT_ROOT, { withFileTypes: true });
@@ -722,25 +764,123 @@ async function listRecentOutputs(limit = 8) {
     if (!entry.isDirectory()) continue;
     const slug = entry.name;
     const dir = path.join(OUTPUT_ROOT, slug);
-    const video = path.join(dir, "final.mp4");
-    try {
-      const stat = await fs.stat(video);
-      const scriptJson = await readOptionalJson(path.join(dir, "script.json"));
-      const title = scriptJson?.title || titleFromSlug(slug);
-      items.push({
-        slug,
-        title,
-        updatedAt: stat.mtime.toISOString(),
-        outputs: await outputPathsForSlug(slug)
-      });
-    } catch {
-      // Skip incomplete output folders.
-    }
+    const scriptJson = await readOptionalJson(path.join(dir, "script.json"));
+    const draftJson = await readOptionalJson(path.join(dir, "draft.json"));
+    const jobState = await readOptionalJson(path.join(dir, "job-state.json"));
+    const hasUsefulFiles = Boolean(scriptJson || draftJson || jobState || await fileExists(path.join(dir, "final.mp4")));
+    if (!hasUsefulFiles) continue;
+    const updatedAt = await latestOutputMtime(dir);
+    const status = jobState?.status || (await fileExists(path.join(dir, "final.mp4")) ? "completed" : "draft");
+    items.push({
+      slug,
+      title: scriptJson?.title || draftJson?.draft?.title || draftJson?.topic || jobState?.topic || titleFromSlug(slug),
+      status,
+      updatedAt,
+      outputs: await outputPathsForSlug(slug)
+    });
   }
 
   return items
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, limit);
+}
+
+async function latestOutputMtime(dir) {
+  const candidates = [
+    "final.mp4",
+    "job-state.json",
+    "script.json",
+    "draft.json",
+    "audio.wav",
+    "image-manifest.json",
+    "music-manifest.json"
+  ];
+  let latest = null;
+  for (const name of candidates) {
+    try {
+      const stat = await fs.stat(path.join(dir, name));
+      if (!latest || stat.mtime > latest) latest = stat.mtime;
+    } catch {
+      // Optional file.
+    }
+  }
+  if (latest) return latest.toISOString();
+  try {
+    return (await fs.stat(dir)).mtime.toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+async function updateOutputMetadata(res, slugInput, body) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  if (!await fileExists(outputDir)) {
+    return sendJson(res, { error: "Output not found." }, 404);
+  }
+
+  const title = String(body.title || "").trim();
+  if (!title) return sendJson(res, { error: "Title is required." }, 400);
+  if (title.length > 140) return sendJson(res, { error: "Title must be 140 characters or fewer." }, 400);
+
+  const scriptPath = path.join(outputDir, "script.json");
+  const scriptJson = await readOptionalJson(scriptPath);
+  if (scriptJson) {
+    scriptJson.title = title;
+    await fs.writeFile(scriptPath, `${JSON.stringify(scriptJson, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(outputDir, "script.md"), renderMarkdown(scriptJson), "utf8").catch(() => {});
+  }
+
+  const draftPath = path.join(outputDir, "draft.json");
+  const draftJson = await readOptionalJson(draftPath);
+  if (draftJson) {
+    draftJson.topic = title;
+    if (draftJson.draft) draftJson.draft.title = title;
+    await fs.writeFile(draftPath, `${JSON.stringify(draftJson, null, 2)}\n`, "utf8");
+  }
+
+  const jobPath = path.join(outputDir, "job-state.json");
+  const jobJson = await readOptionalJson(jobPath);
+  if (jobJson) {
+    jobJson.topic = title;
+    jobJson.updatedAt = new Date().toISOString();
+    await fs.writeFile(jobPath, `${JSON.stringify(jobJson, null, 2)}\n`, "utf8");
+  }
+
+  return sendJson(res, { ok: true, item: await outputSummaryForSlug(slug) });
+}
+
+async function deleteOutput(res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  if (!await fileExists(outputDir)) {
+    return sendJson(res, { error: "Output not found." }, 404);
+  }
+  for (const [id, job] of jobs.entries()) {
+    if (job.slug === slug) jobs.delete(id);
+  }
+  await fs.rm(outputDir, { recursive: true, force: true });
+  return sendJson(res, { ok: true, slug });
+}
+
+async function outputSummaryForSlug(slug) {
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptJson = await readOptionalJson(path.join(outputDir, "script.json"));
+  const draftJson = await readOptionalJson(path.join(outputDir, "draft.json"));
+  const jobState = await readOptionalJson(path.join(outputDir, "job-state.json"));
+  return {
+    slug,
+    title: scriptJson?.title || draftJson?.draft?.title || draftJson?.topic || jobState?.topic || titleFromSlug(slug),
+    status: jobState?.status || (await fileExists(path.join(outputDir, "final.mp4")) ? "completed" : "draft"),
+    updatedAt: await latestOutputMtime(outputDir),
+    outputs: await outputPathsForSlug(slug)
+  };
 }
 
 async function readOptionalJson(file) {
@@ -779,17 +919,18 @@ async function saveStoryDraft({ topic, template, outline, draft, searchContext, 
 
 async function outputPathsForSlug(slug) {
   const base = `/outputs/${slug}/`;
+  const outputDir = path.join(OUTPUT_ROOT, slug);
   const musicPath = path.join(OUTPUT_ROOT, slug, "music", "background.mp3");
   return {
-    video: `${base}final.mp4`,
-    script: `${base}script.md`,
-    subtitles: `${base}subtitles.srt`,
-    audio: `${base}audio.wav`,
+    video: await fileExists(path.join(outputDir, "final.mp4")) ? `${base}final.mp4` : null,
+    script: await fileExists(path.join(outputDir, "script.md")) ? `${base}script.md` : null,
+    subtitles: await fileExists(path.join(outputDir, "subtitles.srt")) ? `${base}subtitles.srt` : null,
+    audio: await fileExists(path.join(outputDir, "audio.wav")) ? `${base}audio.wav` : null,
     music: await fileExists(musicPath) ? `${base}music/background.mp3` : null,
     draftJson: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.json")) ? `${base}draft.json` : null,
     draftMd: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.md")) ? `${base}draft.md` : null,
-    imagePrompts: `${base}image-prompts.md`,
-    scriptJson: `${base}script.json`,
+    imagePrompts: await fileExists(path.join(outputDir, "image-prompts.md")) ? `${base}image-prompts.md` : null,
+    scriptJson: await fileExists(path.join(outputDir, "script.json")) ? `${base}script.json` : null,
     jobState: await fileExists(path.join(OUTPUT_ROOT, slug, "job-state.json")) ? `${base}job-state.json` : null,
     audioManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "audio-manifest.json")) ? `${base}audio-manifest.json` : null,
     imageManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "image-manifest.json")) ? `${base}image-manifest.json` : null,
@@ -798,8 +939,55 @@ async function outputPathsForSlug(slug) {
   };
 }
 
+async function rerenderOutputUi(res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const audioPath = path.join(outputDir, "audio.wav");
+  const musicPath = path.join(outputDir, "music", "background.mp3");
+  const story = await readOptionalJson(scriptPath);
+  if (!story) {
+    return sendJson(res, { error: "script.json is required for UI-only re-render." }, 404);
+  }
+  if (!await fileExists(audioPath)) {
+    return sendJson(res, { error: "audio.wav is required for UI-only re-render." }, 404);
+  }
+
+  const readingItems = Array.isArray(story.readingOrder) ? story.readingOrder : [];
+  if (!readingItems.length) {
+    return sendJson(res, { error: "script.json has no readingOrder to render." }, 400);
+  }
+
+  const logs = [];
+  const startedAt = new Date().toISOString();
+  const result = await composeStoryVideo({
+    story,
+    readingItems,
+    outputDir,
+    audioPath,
+    musicPath: await fileExists(musicPath) ? musicPath : null,
+    logs
+  });
+  const outputs = await outputPathsForSlug(slug);
+  return sendJson(res, {
+    ok: true,
+    slug,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    video: outputs.video,
+    outputs,
+    frameCount: result.scenes.length,
+    logs
+  });
+}
+
 async function getMediaInfo(outputPath) {
-  const target = resolveOutputPath(outputPath);
+  const cleanPath = String(outputPath || "").split("?")[0];
+  const target = resolveOutputPath(cleanPath);
   if (!target) {
     throw new Error("Invalid media path.");
   }
@@ -816,13 +1004,13 @@ async function getMediaInfo(outputPath) {
   });
   const durationSeconds = Number(stdout.trim());
   return {
-    path: outputPath,
+    path: cleanPath,
     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0
   };
 }
 
 function resolveOutputPath(outputPath) {
-  const text = String(outputPath || "");
+  const text = String(outputPath || "").split("?")[0];
   if (!text.startsWith("/outputs/")) return null;
   const relative = decodeURIComponent(text).replace(/^\/outputs\//, "");
   const target = path.resolve(OUTPUT_ROOT, relative);

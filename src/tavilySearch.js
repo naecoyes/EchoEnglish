@@ -13,7 +13,7 @@ async function searchTopicContext({ topic, apiKey, maxResults = 6, searchHint = 
   const query = [
     cleanTopic,
     cleanText(searchHint),
-    "official timeline, important dates, founder, launch, production, deliveries, press release, annual report, facts for documentary"
+    "reliable sources, clear explanation, key facts, practical examples, beginner-friendly background"
   ].join(" ");
 
   const payload = await callTavilySearch({

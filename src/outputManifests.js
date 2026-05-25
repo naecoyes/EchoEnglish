@@ -40,6 +40,8 @@ async function initAudioManifest(outputDir, items) {
       index,
       text: item.text,
       language: item.language,
+      speaker: item.speaker || null,
+      voice: item.voice || null,
       status: previous.get(item.id)?.status || "pending",
       cacheKey: previous.get(item.id)?.cacheKey || null,
       durationSeconds: previous.get(item.id)?.durationSeconds || null,

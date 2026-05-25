@@ -8,8 +8,8 @@ const { ensureDir, pathExists } = require("./utils");
 const execFileAsync = promisify(execFile);
 const WIDTH = 1920;
 const HEIGHT = 1080;
-const CAPTION_Y = 740;
-const CAPTION_H = 300;
+const CAPTION_Y = 760;
+const CAPTION_H = 250;
 
 async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [] }) {
   await assertCommand("ffmpeg", ["-version"]);
@@ -202,6 +202,9 @@ function createSentenceFrame(story, item, sectionIndex, index) {
     vocabTranslation,
     vocabPhonetic,
     highlightedTerm: vocabWord,
+    speaker: item.speaker,
+    speakerName: item.speakerName,
+    isPodcast: story.template?.id === "podcast-dialogue" || item.speaker === "host-a" || item.speaker === "host-b",
     visual: section.visual
   });
 }
@@ -325,33 +328,96 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri }) {
   <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#000" opacity="0.16"/>
   ${frame.kind === "cover" ? renderCoverOverlay(story, frame) : ""}
   ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame) : ""}
-  ${frame.kind !== "cover" && frame.kind !== "vocab-review" ? `
+  ${frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
+  ${renderPodcastHosts(frame)}
+  ${frame.vocabWord ? renderVocabularyOverlay(frame) : ""}
+  ${renderPodcastCaption(frame)}` : ""}
+  ${frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
   ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame) : ""}
-  <rect x="150" y="${CAPTION_Y}" width="1620" height="${CAPTION_H}" rx="34" fill="#04111f" opacity="0.68"/>
+  <rect x="150" y="${CAPTION_Y}" width="1620" height="${CAPTION_H}" rx="34" fill="#04111f" opacity="0.61"/>
   <rect x="150" y="${CAPTION_Y}" width="1620" height="${CAPTION_H}" rx="34" fill="none" stroke="#93c5fd" stroke-width="2.5" opacity="0.52"/>
   <rect x="154" y="${CAPTION_Y + 4}" width="1612" height="${CAPTION_H - 8}" rx="30" fill="none" stroke="#ffffff" stroke-width="1.3" opacity="0.18"/>
   ${renderBottomText(frame)}` : ""}
 </svg>`;
 }
 
+function renderPodcastHosts(frame) {
+  const activeA = frame.speaker !== "host-b";
+  const activeB = frame.speaker === "host-b";
+  return `
+  ${renderPodcastHostCard({ x: 120, y: 90, side: "left", label: "Host A", active: activeA })}
+  ${renderPodcastHostCard({ x: 1320, y: 90, side: "right", label: "Host B", active: activeB })}`;
+}
+
+function renderPodcastHostCard({ x, y, side, label, active }) {
+  const avatarX = x + (side === "left" ? 92 : 338);
+  const micX = x + (side === "left" ? 222 : 180);
+  const labelX = x + (side === "left" ? 92 : 338);
+  const accent = active ? "#0b84ff" : "#94a3b8";
+  const opacity = active ? 0.86 : 0.52;
+  return `
+  <g opacity="${opacity}">
+    <rect x="${x}" y="${y}" width="480" height="210" rx="34" fill="#061527" opacity="0.72"/>
+    <rect x="${x}" y="${y}" width="480" height="210" rx="34" fill="none" stroke="${accent}" stroke-width="${active ? 4 : 2}" opacity="0.62"/>
+    <circle cx="${avatarX}" cy="${y + 82}" r="48" fill="${accent}" opacity="0.96"/>
+    <circle cx="${avatarX}" cy="${y + 66}" r="21" fill="#eaf5ff"/>
+    <path d="M${avatarX - 40} ${y + 134} C${avatarX - 26} ${y + 100} ${avatarX + 26} ${y + 100} ${avatarX + 40} ${y + 134} Z" fill="#eaf5ff"/>
+    <rect x="${micX}" y="${y + 58}" width="30" height="94" rx="15" fill="#e2e8f0"/>
+    <rect x="${micX - 38}" y="${y + 148}" width="106" height="10" rx="5" fill="#e2e8f0"/>
+    <path d="M${micX - 28} ${y + 90} C${micX - 28} ${y + 150} ${micX + 58} ${y + 150} ${micX + 58} ${y + 90}" stroke="${accent}" stroke-width="7" fill="none" stroke-linecap="round"/>
+    <text x="${labelX}" y="${y + 178}" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="900" fill="#ffffff">${label}</text>
+  </g>`;
+}
+
+function renderPodcastCaption(frame) {
+  const isHostB = frame.speaker === "host-b";
+  const x = isHostB ? 610 : 150;
+  const speakerX = isHostB ? 1615 : 305;
+  const textX = isHostB ? 960 : 960;
+  const label = frame.speakerName || (isHostB ? "Host B" : "Host A");
+  return `
+  <rect x="${x}" y="${CAPTION_Y}" width="1160" height="${CAPTION_H}" rx="36" fill="#04111f" opacity="0.65"/>
+  <rect x="${x}" y="${CAPTION_Y}" width="1160" height="${CAPTION_H}" rx="36" fill="none" stroke="${isHostB ? "#f59e0b" : "#38bdf8"}" stroke-width="3" opacity="0.72"/>
+  <rect x="${isHostB ? 1460 : 180}" y="${CAPTION_Y + 28}" width="270" height="52" rx="26" fill="${isHostB ? "#f59e0b" : "#0b84ff"}" opacity="0.92"/>
+  <text x="${speakerX}" y="${CAPTION_Y + 63}" text-anchor="middle" font-family="Arial, sans-serif" font-size="25" font-weight="900" fill="#ffffff">${escapeXml(label)}</text>
+  ${renderPodcastBottomText(frame, textX)}`;
+}
+
+function renderPodcastBottomText(frame, textX) {
+  const englishLines = wrapWords(frame.english || "", 40).slice(0, 2);
+  const chineseLines = wrapMixed(frame.chinese || "", 34).slice(0, 2);
+  const englishFont = englishLines.length > 1 ? 44 : 48;
+  const chineseFont = chineseLines.length > 1 ? 29 : 31;
+  const englishY = CAPTION_Y + 122;
+  const chineseY = CAPTION_Y + 205;
+  return `
+  ${renderEnglishCaptionLinesAt(englishLines, frame.highlightedTerm, englishY, englishFont, textX)}
+  ${chineseLines.map((line, index) => `<text x="${textX}" y="${chineseY + index * 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.84" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+}
+
 function renderCoverOverlay(story, frame) {
-  const titleLines = wrapWords(story.title || frame.title || "English Story", 26).slice(0, 3);
-  const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", 46).slice(0, 2);
+  const titleLines = wrapWords(story.title || frame.title || "English Story", 24).slice(0, 3);
+  const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", 50).slice(0, 2);
   const gradeLevel = estimateUsGradeLevel(story);
   return `
   <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#020817" opacity="0.42"/>
-  <rect x="150" y="120" width="1620" height="850" rx="52" fill="url(#coverPanel)" opacity="0.9"/>
-  <rect x="150" y="120" width="1620" height="850" rx="52" fill="#ffffff" opacity="0.18"/>
-  <text x="240" y="265" font-family="Arial, sans-serif" font-size="32" font-weight="900" letter-spacing="6" fill="#1d4ed8">ECHOENGLISH</text>
-  <text x="240" y="350" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="56" font-weight="900" fill="#0f172a">今天的故事</text>
-  ${titleLines.map((line, index) => `<text x="240" y="${450 + index * 82}" font-family="Arial, sans-serif" font-size="76" font-weight="900" fill="#081225">${escapeXml(line)}</text>`).join("\n  ")}
-  <text x="245" y="685" font-family="Arial, sans-serif" font-size="34" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
-  ${summaryLines.map((line, index) => `<text x="245" y="${732 + index * 38}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="28" font-weight="700" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
-  <text x="245" y="820" font-family="Arial, sans-serif" font-size="30" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
-  <text x="245" y="858" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="26" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>
-  <rect x="245" y="884" width="360" height="66" rx="33" fill="#0b84ff" opacity="0.95"/>
-  <text x="425" y="926" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="900" fill="#ffffff">Listen and Shadow</text>
-  <text x="635" y="926" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="900" fill="#1d4ed8">听力 · 阅读 · 口语跟读</text>`;
+  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#04111f" opacity="0.2"/>
+  <rect x="80" y="110" width="1760" height="860" rx="58" fill="#020817" opacity="0.34"/>
+  <rect x="120" y="150" width="1680" height="780" rx="54" fill="url(#coverPanel)" opacity="0.88"/>
+  <rect x="120" y="150" width="1680" height="780" rx="54" fill="#ffffff" opacity="0.14"/>
+  <rect x="152" y="182" width="1616" height="716" rx="42" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.25"/>
+  <rect x="250" y="235" width="330" height="58" rx="29" fill="#0b84ff" opacity="0.95"/>
+  <text x="415" y="274" text-anchor="middle" font-family="Arial, sans-serif" font-size="27" font-weight="900" letter-spacing="4" fill="#ffffff">ECHOENGLISH</text>
+  <text x="250" y="365" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="52" font-weight="900" fill="#0f172a">今天的故事</text>
+  ${titleLines.map((line, index) => `<text x="250" y="${470 + index * 82}" font-family="Arial, sans-serif" font-size="74" font-weight="950" fill="#071126">${escapeXml(line)}</text>`).join("\n  ")}
+  <rect x="1250" y="300" width="260" height="260" rx="64" fill="#0b84ff" opacity="0.92"/>
+  <polygon points="1346,384 1346,476 1428,430" fill="#ffffff" opacity="0.96"/>
+  <text x="1380" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="950" fill="#0f172a">Listen &amp; Shadow</text>
+  <text x="1380" y="665" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="850" fill="#1d4ed8">边听边读 · 口语跟读</text>
+  <text x="250" y="760" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
+  ${summaryLines.map((line, index) => `<text x="250" y="${808 + index * 34}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
+  <text x="250" y="878" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
+  <text x="250" y="916" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
 }
 
 function renderVocabularyReviewOverlay(frame) {
@@ -359,13 +425,18 @@ function renderVocabularyReviewOverlay(frame) {
   const columns = 3;
   const rowsPerColumn = Math.max(1, Math.ceil(vocabulary.length / columns));
   const columnWidth = 520;
-  const startX = 195;
-  const startY = 230;
-  const rowHeight = vocabulary.length > 45 ? 42 : 48;
+  const startX = 190;
+  const startY = 276;
+  const dense = rowsPerColumn > 13;
+  const rowHeight = dense ? 39 : 58;
+  const wordFont = dense ? 19 : 23;
+  const phoneticFont = dense ? 14 : 17;
+  const chineseFont = dense ? 17 : 20;
 
   return `
   <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#020817" opacity="0.52"/>
   <rect x="120" y="90" width="1680" height="900" rx="44" fill="#f8fbff" opacity="0.94"/>
+  <rect x="150" y="120" width="1620" height="840" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
   <text x="190" y="170" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
   <text x="190" y="215" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
   ${vocabulary.map((entry, index) => {
@@ -376,11 +447,25 @@ function renderVocabularyReviewOverlay(frame) {
     const word = entry.word || entry[0] || "";
     const translation = entry.translation || entry[1] || "";
     const phonetic = entry.phonetic || entry[2] || "";
-    return `
-  <text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="24" font-weight="900" fill="#0f172a">${escapeXml(word)}</text>
-  <text x="${x + 190}" y="${y}" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#2563eb">${escapeXml(phonetic)}</text>
-  <text x="${x + 315}" y="${y}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="22" font-weight="800" fill="#475569">${escapeXml(translation)}</text>`;
+    return renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont });
   }).join("\n  ")}`;
+}
+
+function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont }) {
+  const wordText = fitSvgText(word, 26);
+  const phoneticText = fitSvgText(phonetic, 30);
+  const translationText = fitSvgText(translation, 15);
+  const wordSize = fitFontSize(wordText, wordFont, 230);
+  const phoneticSize = fitFontSize(phoneticText, phoneticFont, 278);
+  const translationSize = fitFontSize(translationText, chineseFont, 178, true);
+  const secondLineY = y + Math.min(29, Math.max(23, rowHeight * 0.48));
+  return `
+  <g>
+    <line x1="${x}" y1="${y + rowHeight - 12}" x2="${x + 470}" y2="${y + rowHeight - 12}" stroke="#dbeafe" stroke-width="1.2" opacity="0.62"/>
+    <text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${wordSize}" font-weight="900" fill="#0f172a">${escapeXml(wordText)}</text>
+    <text x="${x}" y="${secondLineY}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
+    <text x="${x + 315}" y="${secondLineY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>
+  </g>`;
 }
 
 function renderVocabularyOverlay(frame) {
@@ -390,11 +475,11 @@ function renderVocabularyOverlay(frame) {
   const phoneticLines = wrapMixed(phonetic || "", 26).slice(0, 1);
   const translationLines = wrapMixed(translation || "", 18).slice(0, 1);
   return `
-  <rect x="1390" y="68" width="470" height="150" rx="22" fill="#061527" opacity="0.72"/>
-  <rect x="1390" y="68" width="470" height="150" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.42"/>
-  ${wordLines.map((line) => `<text x="1418" y="113" font-family="Georgia, 'Times New Roman', serif" font-size="29" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
-  ${phoneticLines.map((line) => `<text x="1418" y="153" font-family="Arial, sans-serif" font-size="22" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
-  ${translationLines.map((line) => `<text x="1418" y="193" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="26" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  <rect x="1430" y="70" width="430" height="136" rx="22" fill="#061527" opacity="0.74"/>
+  <rect x="1430" y="70" width="430" height="136" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.44"/>
+  ${wordLines.map((line) => `<text x="1458" y="112" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
+  ${phoneticLines.map((line) => `<text x="1458" y="149" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
+  ${translationLines.map((line) => `<text x="1458" y="184" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
 }
 
 function renderBottomText(frame) {
@@ -413,19 +498,23 @@ function renderBottomText(frame) {
   const chineseY = top + englishBlockHeight + gap + chineseFont;
   return `
   ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont)}
-  ${chineseLines.map((line, index) => `<text x="${WIDTH / 2}" y="${chineseY + index * 38}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  ${chineseLines.map((line, index) => `<text x="${WIDTH / 2}" y="${chineseY + index * 38}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.86" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
 }
 
 function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize) {
+  return renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, WIDTH / 2);
+}
+
+function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, centerX) {
   const plain = lines.map((line, index) => ({ line, y: startY + index * 52 }));
   if (!highlightedTerm) {
-    return plain.map(({ line, y }) => renderCenteredText(line, y, fontSize, "#ffffff")).join("\n  ");
+    return plain.map(({ line, y }) => renderCenteredTextAt(line, y, fontSize, "#ffffff", centerX)).join("\n  ");
   }
 
   const normalizedTerm = normalizeTermForMatch(highlightedTerm);
   return plain.map(({ line, y }) => {
     const match = findTermInLine(line, normalizedTerm);
-    if (!match) return renderCenteredText(line, y, fontSize, "#ffffff");
+    if (!match) return renderCenteredTextAt(line, y, fontSize, "#ffffff", centerX);
     const before = line.slice(0, match.start);
     const term = line.slice(match.start, match.end);
     const after = line.slice(match.end);
@@ -433,15 +522,19 @@ function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize) {
     const termWidth = estimateEnglishTextWidth(term, fontSize);
     const afterWidth = estimateEnglishTextWidth(after, fontSize);
     const totalWidth = beforeWidth + termWidth + afterWidth;
-    const x = WIDTH / 2 - totalWidth / 2;
-    return `<text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="#ffffff" filter="url(#textShadow)">
-      <tspan>${escapeXml(before)}</tspan><tspan fill="#f59e0b">${escapeXml(term)}</tspan><tspan>${escapeXml(after)}</tspan>
+    const x = centerX - totalWidth / 2;
+    return `<text x="${x}" y="${y}" xml:space="preserve" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="#ffffff" filter="url(#textShadow)">
+      <tspan xml:space="preserve">${escapeXml(before)}</tspan><tspan fill="#f59e0b">${escapeXml(term)}</tspan><tspan xml:space="preserve">${escapeXml(after)}</tspan>
     </text>`;
   }).join("\n  ");
 }
 
 function renderCenteredText(line, y, fontSize, fill) {
-  return `<text x="${WIDTH / 2}" y="${y}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="${fill}" filter="url(#textShadow)">${escapeXml(line)}</text>`;
+  return renderCenteredTextAt(line, y, fontSize, fill, WIDTH / 2);
+}
+
+function renderCenteredTextAt(line, y, fontSize, fill, centerX) {
+  return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="${fill}" filter="url(#textShadow)">${escapeXml(line)}</text>`;
 }
 
 function renderFallbackImage(frame, palette) {
@@ -577,10 +670,21 @@ function selectVocabularyForSentence(story, section, sentence) {
   const global = Array.isArray(story?.vocabularyReview)
     ? story.vocabularyReview.map((entry) => [entry.word, entry.translation, entry.phonetic])
     : [];
-  const candidates = [...local, ...global].filter((entry) => entry?.[0]);
   const sentenceText = normalizeSentenceForMatch(sentence);
 
-  return candidates.find((entry) => sentenceIncludesTerm(sentenceText, entry[0])) || null;
+  return selectMatchingVocabulary(local, sentenceText) || selectMatchingVocabulary(global, sentenceText);
+}
+
+function selectMatchingVocabulary(candidates, sentenceText) {
+  return candidates
+    .filter((entry) => entry?.[0] && sentenceIncludesTerm(sentenceText, entry[0]))
+    .sort((a, b) => vocabularyScore(b[0]) - vocabularyScore(a[0]))[0] || null;
+}
+
+function vocabularyScore(term) {
+  const normalized = normalizeTermForMatch(term);
+  const words = normalized.split(/\s+/).filter(Boolean).length;
+  return normalized.length + words * 6;
 }
 
 function sentenceIncludesTerm(sentenceText, term) {
@@ -607,6 +711,7 @@ function findTermInLine(line, normalizedTerm) {
 function termVariants(term) {
   const normalized = normalizeTermForMatch(term);
   const variants = new Set([normalized]);
+  addNumberWordVariants(normalized, variants);
   if (normalized.endsWith("y")) variants.add(`${normalized.slice(0, -1)}ies`);
   if (normalized.endsWith("e")) {
     variants.add(`${normalized}d`);
@@ -617,6 +722,30 @@ function termVariants(term) {
     variants.add(`${normalized}ing`);
   }
   return [...variants].filter(Boolean);
+}
+
+function addNumberWordVariants(term, variants) {
+  const numberWords = {
+    zero: "0",
+    one: "1",
+    two: "2",
+    three: "3",
+    four: "4",
+    five: "5",
+    six: "6",
+    seven: "7",
+    eight: "8",
+    nine: "9",
+    ten: "10"
+  };
+  Object.entries(numberWords).forEach(([word, number]) => {
+    if (new RegExp(`\\b${word}\\b`).test(term)) {
+      variants.add(term.replace(new RegExp(`\\b${word}\\b`, "g"), number));
+    }
+    if (new RegExp(`\\b${number}\\b`).test(term)) {
+      variants.add(term.replace(new RegExp(`\\b${number}\\b`, "g"), word));
+    }
+  });
 }
 
 function normalizeSentenceForMatch(value) {
@@ -774,6 +903,23 @@ function wrapMixed(text, maxChars) {
 
 function displayWidth(text) {
   return Array.from(text).reduce((total, char) => total + (char.charCodeAt(0) > 127 ? 1.8 : 1), 0);
+}
+
+function fitSvgText(text, maxWidth) {
+  const value = String(text || "").trim();
+  if (displayWidth(value) <= maxWidth) return value;
+  let current = "";
+  for (const char of value) {
+    if (displayWidth(`${current}${char}...`) > maxWidth) break;
+    current += char;
+  }
+  return current ? `${current}...` : value.slice(0, Math.max(1, maxWidth - 3));
+}
+
+function fitFontSize(text, baseSize, maxPixels, mixed = false) {
+  const estimated = displayWidth(text) * baseSize * (mixed ? 0.58 : 0.54);
+  if (!estimated || estimated <= maxPixels) return baseSize;
+  return Math.max(12, Math.floor(baseSize * (maxPixels / estimated)));
 }
 
 function escapeXml(value) {

@@ -6,8 +6,9 @@ const { fetchBufferWithPolicy, fetchJsonWithPolicy } = require("./apiLimiter");
 const { validateImageOrThrow } = require("./imageQuality");
 
 const API_URL = "https://api.minimaxi.com/v1/image_generation";
+const MAX_PROMPT_CHARS = 1450;
 
-async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
+async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer, onProgress }) {
   if (!apiKey) {
     throw new Error("MINIMAX_API_KEY is required for MiniMax image generation.");
   }
@@ -50,6 +51,13 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
       attempts: 0,
       error: null
     });
+    await reportProgress(onProgress, {
+      sceneId: scene.id,
+      status: "running",
+      completed: results.length,
+      total: scenes.length,
+      index
+    });
 
     let imageUrl = null;
     let outputPath = null;
@@ -83,9 +91,21 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
       imageUrl,
       imagePath: outputPath
     });
+    await reportProgress(onProgress, {
+      sceneId: scene.id,
+      status: "completed",
+      completed: results.length,
+      total: scenes.length,
+      index
+    });
   }
 
   return results;
+}
+
+async function reportProgress(onProgress, progress) {
+  if (typeof onProgress !== "function") return;
+  await onProgress(progress);
 }
 
 async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
@@ -100,7 +120,7 @@ async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, mod
       const imageUrl = await requestImage({
         apiKey,
         model,
-        prompt: scene.imagePrompt || buildPrompt(scene),
+        prompt: prepareMiniMaxPrompt(scene),
         aspectRatio,
         promptOptimizer
       });
@@ -155,9 +175,10 @@ function detectImageExtension(bytes) {
 }
 
 async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimizer }) {
+  const safePrompt = limitPrompt(prompt, MAX_PROMPT_CHARS);
   const body = {
     model,
-    prompt,
+    prompt: safePrompt,
     aspect_ratio: aspectRatio,
     response_format: "url",
     n: 1,
@@ -188,6 +209,40 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
   return imageUrl;
 }
 
+function prepareMiniMaxPrompt(scene) {
+  const direct = normalizePrompt(scene.imagePrompt || "");
+  if (direct && direct.length <= MAX_PROMPT_CHARS) return direct;
+
+  const compact = [
+    "16:9 photorealistic cinematic still image for an English shadowing video.",
+    scene.title ? `Title: ${scene.title}.` : "",
+    scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
+    scene.visualStyle ? `Style: ${scene.visualStyle}.` : "",
+    scene.visual ? `Scene: ${limitPrompt(scene.visual, 360)}.` : "",
+    scene.moment ? `Moment: ${limitPrompt(scene.moment, 280)}.` : "",
+    "Real documentary photography, one clear focal subject, believable real-world location, natural human scale, 35mm lens look, cinematic depth of field, professional lighting, realistic texture.",
+    "Keep lower third clean for bilingual subtitles.",
+    "No text, no readable signs, no subtitles, no logos, no watermark, no UI, no cartoon, no vector art, no PPT slide."
+  ].filter(Boolean).join(" ");
+
+  if (compact.length <= MAX_PROMPT_CHARS) return compact;
+  return limitPrompt(compact, MAX_PROMPT_CHARS);
+}
+
+function normalizePrompt(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function limitPrompt(value, maxChars) {
+  const text = normalizePrompt(value);
+  if (text.length <= maxChars) return text;
+  const hardLimit = Math.max(80, maxChars - 1);
+  const slice = text.slice(0, hardLimit);
+  const sentenceEnd = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("; "), slice.lastIndexOf(", "));
+  const cut = sentenceEnd > Math.floor(maxChars * 0.72) ? slice.slice(0, sentenceEnd + 1) : slice;
+  return cut.trim();
+}
+
 async function validateCachedImage(cachedPath, imagesDir, sceneId) {
   try {
     return await validateImageOrThrow(cachedPath);
@@ -207,9 +262,13 @@ async function downloadImageWithRetry(imageUrl, sceneId) {
 
 function buildPrompt(scene) {
   return [
-    "16:9 documentary-style illustration, modern technology startup history video.",
-    `Scene: ${scene.visual}.`,
-    "Clean cinematic composition, orange Xiaomi-inspired accent, no logos, no readable text, suitable for business history narration."
+    "Create a 16:9 photorealistic cinematic still image for an English shadowing video.",
+    scene.title ? `Video title: ${scene.title}.` : "",
+    scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
+    scene.visualStyle ? `Visual style: ${scene.visualStyle}.` : "",
+    `Scene: ${scene.visual || "clear documentary story moment"}.`,
+    "Use realistic documentary photography, one clear focal subject, real location, motivated cinematic light, 35mm lens look, high detail, natural color grade.",
+    "Leave the lower third visually clean for subtitles. No text, no readable signs, no subtitles, no logos, no watermark, no UI, no cartoon, no vector art, no PPT slide."
   ].join(" ");
 }
 

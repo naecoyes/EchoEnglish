@@ -12,9 +12,12 @@ function buildReadingItems(story) {
 
     story.sections.forEach((section, sectionIndex) => {
       section.sentences.forEach((sentence, sentenceIndex) => {
+        const speaker = getSentenceSpeaker(story, section, sentenceIndex);
         items.push(createItem(counter, "story-sentence", sentence, "en", story.defaults.sentencePauseSeconds, {
           sectionIndex,
-          sentenceIndex
+          sentenceIndex,
+          speaker,
+          speakerName: speakerName(speaker)
         }));
         counter += 1;
       });
@@ -39,9 +42,12 @@ function buildReadingItems(story) {
     counter += 1;
 
     section.sentences.forEach((sentence, sentenceIndex) => {
+      const speaker = getSentenceSpeaker(story, section, sentenceIndex);
       items.push(createItem(counter, "story-sentence", sentence, "en", story.defaults.sentencePauseSeconds, {
         sectionIndex,
-        sentenceIndex
+        sentenceIndex,
+        speaker,
+        speakerName: speakerName(speaker)
       }));
       counter += 1;
     });
@@ -68,6 +74,19 @@ function estimateUsGradeLevel(story) {
 
 function normalizeSectionTitleForSpeech(title) {
   return String(title).replace(/\s+-\s+(Listen|Shadow|Review\s+\d+)$/i, "");
+}
+
+function getSentenceSpeaker(story, section, sentenceIndex) {
+  const explicit = section.speakers?.[sentenceIndex];
+  if (explicit === "host-a" || explicit === "host-b") return explicit;
+  if (story.template?.id === "podcast-dialogue") return sentenceIndex % 2 === 0 ? "host-a" : "host-b";
+  return null;
+}
+
+function speakerName(speaker) {
+  if (speaker === "host-a") return "Host A";
+  if (speaker === "host-b") return "Host B";
+  return null;
 }
 
 function createItem(counter, kind, text, language, pauseAfterSeconds, extra = {}) {
@@ -104,7 +123,8 @@ function renderMarkdown(story) {
     lines.push(`## ${section.title}`, "");
     lines.push(`Image Prompt: ${section.imagePrompt}`, "");
     section.sentences.forEach((sentence, index) => {
-      lines.push(`${index + 1}. ${sentence}`);
+      const speaker = speakerName(section.speakers?.[index]);
+      lines.push(`${index + 1}. ${speaker ? `${speaker}: ` : ""}${sentence}`);
       if (section.translations?.[index]) {
         lines.push(`   ${section.translations[index]}`);
       }
@@ -170,7 +190,8 @@ function renderSrt(items) {
     .map((item, index) => {
       const start = formatSrtTime(item.startSeconds || 0);
       const end = formatSrtTime(Math.max(item.endSeconds || 0, (item.startSeconds || 0) + 0.5));
-      return `${index + 1}\n${start} --> ${end}\n${item.text}\n`;
+      const speaker = item.speakerName ? `${item.speakerName}: ` : "";
+      return `${index + 1}\n${start} --> ${end}\n${speaker}${item.text}\n`;
     })
     .join("\n");
 }

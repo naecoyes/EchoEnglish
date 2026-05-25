@@ -1,18 +1,8 @@
 # EchoEnglish
 
-English story narration video generator with cinematic scene images, bilingual captions, and vocabulary notes. Uses AI services (MiniMax, Google Gemini, Xiaomi) for TTS, image generation, and background music.
+EchoEnglish is a local AI workflow for generating English shadowing videos from any topic. It creates a reviewed script, sentence-level narration, 100+ scene images, bilingual captions, vocabulary notes, background music, and a final MP4.
 
-## Features
-
-- Custom topic input with 10 built-in video templates
-- Tavily web search for topic research
-- LLM-powered story planning and script generation (Qwen, MiMo, etc.)
-- Multi-provider TTS: MiniMax, Google Gemini, Xiaomi
-- Multi-provider image generation: MiniMax, Google Imagen
-- Background music generation (MiniMax)
-- React/Vite PWA dashboard with liquid-glass navigation
-- PIN-based access protection
-- Quality report generation
+The dashboard is designed for long 15-minute learning videos, with recoverable generation stages so API quota errors, network failures, or service restarts do not waste completed audio, images, or music.
 
 ## Screenshots
 
@@ -32,39 +22,123 @@ English story narration video generator with cinematic scene images, bilingual c
 
 ![Mobile generate layout](docs/screenshots/mobile-generate.png)
 
+## Core Workflow
+
+1. Enter a topic.
+2. Choose a video type template.
+3. Tavily searches for topic context and factual sources.
+4. The LLM creates a complete 15-minute draft.
+5. Review the draft, revise with feedback, then confirm generation.
+6. EchoEnglish generates narration, scene images, background music, captions, and final MP4.
+7. If a stage fails, click Continue Generation to resume from saved manifests.
+
+Generation is tracked as a seven-stage state machine:
+
+```text
+draft -> script-assets -> tts -> images -> music -> compose -> quality
+```
+
+Each output folder can include:
+
+```text
+outputs/{slug}/
+  draft.json
+  draft.md
+  script.json
+  script.md
+  subtitles.srt
+  audio.wav
+  image-prompts.md
+  audio-manifest.json
+  image-manifest.json
+  music-manifest.json
+  quality-report.json
+  images/
+  music/
+  slides/
+  final.mp4
+  job-state.json
+```
+
+## Video Types
+
+EchoEnglish supports multiple video modes through templates:
+
+| Template | Mode | Best for |
+| --- | --- | --- |
+| Company Origin Story | factual documentary | Company history and brand origin videos |
+| Product Launch History | factual documentary | Product, car, phone, app, or platform launch stories |
+| Founder Biography | factual documentary | Founder or public figure biographies |
+| City Travel Story | fictional story | Travel English with real city details |
+| School Life Story | fictional story | Beginner school and friendship stories |
+| Mystery Adventure | fictional story | Soft mystery and clue-based stories |
+| Science And Technology | factual documentary | Science, technology, missions, inventions |
+| Daily Life Drama | fictional story | Practical daily-life English |
+| Historical Event Documentary | factual documentary | Real events and historical timelines |
+| Future Imagination Story | fictional story | Near-future learning stories |
+| Podcast Conversation | two-host dialogue | Two-host explainer videos with role-based voices |
+
+Factual templates use search-backed context and are instructed not to invent fictional protagonists, employees, private scenes, or unsupported claims.
+
+## Model Support
+
+Configure models from the Settings page. Keys are saved only in `settings.local.json`, which is gitignored.
+
+| Capability | Supported providers | Notes |
+| --- | --- | --- |
+| Script LLM | DashScope/Qwen compatible API, Xiaomi MiMo | Xiaomi requests use MiMo-specific chat parameters |
+| Search | Tavily | Used before draft generation |
+| TTS | MiniMax, Google Gemini TTS, Xiaomi MiMo TTS | Podcast mode supports two host voices |
+| Image | MiniMax image-01, Google Imagen | MiniMax prompts are compressed under API length limits |
+| Music | MiniMax music-2.6 | Generates 3-4 background tracks and merges them |
+
+Recommended stable setup:
+
+- Text: DashScope/Qwen for long drafts
+- TTS: MiniMax `speech-2.8-hd`
+- Image: MiniMax `image-01`
+- Music: MiniMax `music-2.6`
+- Search: Tavily
+
+Xiaomi MiMo can be configured for text or TTS experiments. For long 15-minute drafts, Qwen is currently the more reliable default.
+
 ## Quick Start
 
 ```bash
-# Install dependencies
 npm install
-
-# Build frontend
 npm run build
-
-# Start server (default: http://0.0.0.0:3001)
-npm run web
+PORT=3002 npm run web
 ```
 
-Open Settings to configure API keys:
+Open the dashboard:
 
+```text
+http://127.0.0.1:3002/generate
 ```
-http://127.0.0.1:3001/settings
+
+The server binds to `0.0.0.0`, so LAN URLs are printed at startup. Configure a PIN in Settings before exposing it outside your machine.
+
+## Settings
+
+Open:
+
+```text
+http://127.0.0.1:3002/settings
 ```
 
-## Configuration
+Configure:
 
-API keys are stored in `settings.local.json` (gitignored) and never exposed to the browser after saving.
+- MiniMax API key
+- Tavily API key
+- LLM API base, model, and key
+- Xiaomi MiMo key, base URL, text model, and TTS model
+- Google API key, Imagen model, Gemini TTS model, and voice
+- TTS provider and image provider
+- Podcast host A/B voices
+- Music track count
+- Access PIN
 
-### Required API Keys
-
-| Key | Purpose | Where to get |
-|-----|---------|--------------|
-| MiniMax API Key | TTS, image, music generation | [MiniMax](https://platform.minimaxi.com/) |
-| Tavily API Key | Web search for topic research | [Tavily](https://tavily.com/) |
-| LLM API Key | Story planning and script writing | [DashScope](https://dashscope.aliyun.com/) or compatible |
-| Google API Key | Gemini TTS and Imagen (optional) | [Google AI](https://ai.google.dev/) |
-
-### Environment Variables (fallback)
+Fallback environment variables are also supported:
 
 ```bash
 export MINIMAX_API_KEY="your_key"
@@ -73,96 +147,91 @@ export LLM_API_KEY="your_key"
 export LLM_API_BASE="https://coding.dashscope.aliyuncs.com/v1"
 export STRIX_LLM="qwen3.6-plus"
 export GOOGLE_API_KEY="your_key"
+export ACCESS_PIN="159951"
 npm run web
 ```
 
-### Default Profiles
+Never commit `settings.local.json` or real API keys.
 
-| Profile | TTS Model | Image Model | Music Model |
-|---------|-----------|-------------|-------------|
-| Balanced | speech-2.8-hd | image-01 | music-2.6 |
-| Google | gemini-2.5-flash-preview-tts | imagen-4.0-generate-001 | music-2.6 |
+## Recovery And Continue
 
-## Video Templates
+Long video generation can take time and uses many API calls. EchoEnglish writes progress continuously:
 
-1. Company Origin Story
-2. Product Launch History
-3. Founder Biography
-4. City Travel Story
-5. School Life Story
-6. Mystery Adventure
-7. Science And Technology
-8. Daily Life Drama
-9. Historical Event Documentary
-10. Future Imagination Story
+- `audio-manifest.json` records sentence audio cache state.
+- `image-manifest.json` records every scene image.
+- `music-manifest.json` records generated background tracks.
+- `job-state.json` records stage state, counts, errors, and recoverability.
 
-## CLI Usage
+When a job fails because of rate limits, quota, timeouts, or service restart, open Status and click Continue Generation. Completed TTS, images, and music are reused.
+
+If a server restart leaves a job marked as `running`, EchoEnglish converts it to a recoverable interrupted job on the next load.
+
+## Recent Outputs
+
+The Recent page is a local output manager:
+
+- Preview completed videos.
+- Open sidecar files.
+- Rename output metadata.
+- Delete an output folder.
+- See completed, failed, running, and draft directories.
+
+## Video UI
+
+Generated videos include:
+
+- YouTube-style title cover.
+- Intro narration describing the topic, practice goal, and level.
+- Bilingual captions with English emphasized and Chinese smaller.
+- Current-sentence vocabulary card.
+- Orange highlight for matching keywords.
+- Final vocabulary review table with word, phonetic spelling, and Chinese meaning.
+- Podcast mode with two-host visual layout, two voice roles, and dialogue captions.
+
+Use Preview -> Re-render Video UI to regenerate only slides and MP4 from existing script/audio/images/music. This does not call LLM, TTS, image, or music APIs.
+
+## CLI
+
+The web dashboard is the primary workflow, but CLI generation remains available:
 
 ```bash
-# Quick 3-minute draft
 npm run generate:sample
-
-# Custom topic
 npm run generate -- --topic "The Lost Key" --minutes 3
-npm run generate -- --topic "A rainy day in London" --minutes 15
-
-# Skip audio (text only)
-npm run generate -- --topic "A Rainy Day" --minutes 3 --skip-audio
-
-# Use specific TTS provider
-npm run generate -- --topic "A Rainy Day" --minutes 15 --tts-provider minimax
+npm run generate -- --topic "A Rainy Day in London" --minutes 15
 ```
 
-### CLI Options
+## Troubleshooting
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--topic` | A Rainy Day | Story topic |
-| `--minutes` | 3 | Target duration |
-| `--out` | outputs | Output directory |
-| `--tts-provider` | auto | TTS: auto, minimax, local |
-| `--image-mode` | local | Image: local, existing, minimax |
-| `--music-mode` | none | Music: none, minimax |
-| `--skip-audio` | false | Generate text only |
+### MiniMax image prompt length error
 
-## Output Structure
+MiniMax image prompts must be shorter than 1500 characters. EchoEnglish now compresses prompts before sending them to MiniMax while preserving the original script and prompt files for review.
 
-```
-outputs/{story-slug}/
-  script.json          # Structured story with translations and vocabulary
-  script.md            # Human-readable script
-  image-prompts.md     # Image generation prompts
-  subtitles.srt        # Subtitle file
-  audio.wav            # Narration audio
-  quality-report.json  # Quality metrics
-  music/               # Background music tracks
-  slides/              # Scene frames with captions
-  final.mp4            # Final video
-```
+### Status appears stuck in Scene Images
 
-## Network Access
+Image generation may be slow because a 15-minute video can request 110-120 images. The Status page reads `image-manifest.json` and shows counts such as `Images 14/116`. If a request times out or the server restarts, the job becomes recoverable.
 
-The server binds to `0.0.0.0` by default. Devices on the same LAN can access via the printed LAN URL.
+### Draft quality is repetitive
 
-For external access:
-- **LAN**: Use the printed `http://<LAN_IP>:3001` URL
-- **Internet**: Configure router port forwarding or use ngrok
+Use the draft review step and revise with feedback before confirming. For factual topics, prefer documentary templates and keep Tavily configured. If Xiaomi text generation is slow or incomplete, switch text generation back to the Qwen-compatible LLM profile.
 
-### PIN Protection
+### Video UI changes needed
 
-Set a PIN in Settings or via environment variable:
+Use Re-render Video UI from Preview. It reuses existing assets and avoids extra API cost.
+
+## Development
 
 ```bash
-export ACCESS_PIN="your_pin"
-npm run web
+npm run build
+node --check src/webServer.js
+PORT=3002 npm run web
 ```
 
-Visitors must enter the PIN before using the dashboard.
+This project intentionally keeps the backend on Node built-in `http` instead of Express.
 
 ## Security
 
-- API keys are stored in `settings.local.json` (gitignored)
-- `.env` file is gitignored — copy `.env.example` to `.env` and fill in your keys
-- Keys are masked in the browser after saving
-- No hardcoded secrets in source code
-- **Never commit API keys** — `.env.example` only contains placeholders
+- `settings.local.json` is local and gitignored.
+- Browser summaries mask saved keys.
+- Access PIN can protect local/LAN use.
+- Avoid committing generated outputs that include private content.
+- Do not paste API keys into public issues, screenshots, or README files.

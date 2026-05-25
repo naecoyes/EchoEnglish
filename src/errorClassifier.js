@@ -11,7 +11,10 @@ function classifyError(error) {
   if (/unauthorized|forbidden|invalid api key|api key|http 401|http 403/.test(lower)) {
     return { type: "auth_error", recoverable: false };
   }
-  if (/http 5\d\d|econnreset|etimedout|enotfound|network|fetch failed/.test(lower)) {
+  if (/prompt length|less than 1500|too long/.test(lower)) {
+    return { type: "bad_request", recoverable: true };
+  }
+  if (/http 5\d\d|econnreset|etimedout|enotfound|network|fetch failed|abort|timed out|timeout/.test(lower)) {
     return { type: "network_error", recoverable: true };
   }
   if (/bad request|invalid|http 400|http 404/.test(lower)) {

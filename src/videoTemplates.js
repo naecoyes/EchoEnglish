@@ -108,6 +108,17 @@ const VIDEO_TEMPLATES = [
     vocabularyFocus: ["future", "machine", "choice", "signal", "safe", "question", "learn", "hope"],
     searchHint: "near future English story technology vocabulary beginner",
     draftGuidance: "Use imagination, but keep the human story simple, clear, and visually grounded."
+  },
+  {
+    id: "podcast-dialogue",
+    title: "Podcast Conversation",
+    contentMode: "factual-documentary",
+    summary: "A two-host educational podcast script that explains a topic through natural English conversation.",
+    structureRules: "Use two speakers who alternate short turns. Start with a hook, explain background, ask simple questions, clarify key facts, and end with a short learner recap.",
+    visualStyle: "photorealistic podcast studio, two hosts at microphones, warm desk lights, topic-related background screens, natural cinematic close-ups",
+    vocabularyFocus: ["explain", "question", "background", "detail", "evidence", "example", "meaning", "summary"],
+    searchHint: "topic facts timeline official sources explainer interview podcast background",
+    draftGuidance: "Write in a podcast-like two-host voice, but keep each sentence simple and factual. Prefix sentences with Host A or Host B only when it reads naturally; do not invent unsupported claims."
   }
 ];
 

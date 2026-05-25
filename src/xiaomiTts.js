@@ -41,7 +41,8 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
     const speechText = item.ttsText || item.text;
 
     const baseName = String(index + 1).padStart(4, "0");
-    const cacheKey = createCacheKey({ model, voice, text: speechText, speed });
+    const selectedVoice = item.voice || voice;
+    const cacheKey = createCacheKey({ model, voice: selectedVoice, text: speechText, speed });
     const wavPath = path.join(cacheDir, `${cacheKey}.wav`);
     await updateAudioManifest(outputDir, item.id, {
       status: "running",
@@ -65,7 +66,7 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
           apiUrl,
           apiKey,
           model,
-          voice,
+          voice: selectedVoice,
           text: speechText,
           speed
         });

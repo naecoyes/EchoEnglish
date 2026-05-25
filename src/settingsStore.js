@@ -25,24 +25,26 @@ const DEFAULT_MINIMAX = {
   music: MINIMAX_MUSIC_MODEL,
   englishVoice: "English_Graceful_Lady",
   chineseVoice: "Chinese (Mandarin)_Sweet_Lady",
+  podcastHostAVoice: "English_Graceful_Lady",
+  podcastHostBVoice: "English_Trustworthy_Man",
   musicTrackCount: 3
 };
 
 const DEFAULT_XIAOMI = {
   baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
-  textModel: "mimo-v2.5-pro",
-  ttsModel: "mimo-v2.5-tts",
+  textModel: "MiMo-V2.5-Pro",
+  ttsModel: "MiMo-V2.5-TTS",
   ttsModels: [
-    "mimo-v2.5-tts-voiceclone",
-    "mimo-v2.5-tts-voicedesign",
-    "mimo-v2.5-tts",
-    "mimo-v2-tts"
+    "MiMo-V2.5-TTS-VoiceClone",
+    "MiMo-V2.5-TTS-VoiceDesign",
+    "MiMo-V2.5-TTS",
+    "MiMo-V2-TTS"
   ],
   textModels: [
-    "mimo-v2.5-pro",
-    "mimo-v2.5",
-    "mimo-v2-pro",
-    "mimo-v2-omni"
+    "MiMo-V2.5-Pro",
+    "MiMo-V2.5",
+    "MiMo-V2-Pro",
+    "MiMo-V2-Omni"
   ]
 };
 
@@ -51,6 +53,8 @@ const DEFAULT_GOOGLE = {
   imageModel: "imagen-4.0-generate-001",
   ttsModel: "gemini-2.5-flash-preview-tts",
   voice: "Kore",
+  podcastHostAVoice: "Kore",
+  podcastHostBVoice: "Puck",
   voices: [
     "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
     "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
@@ -149,6 +153,8 @@ async function getEffectiveSettings() {
       imageModel: raw.google?.imageModel || local.google?.imageModel || DEFAULT_GOOGLE.imageModel,
       ttsModel: raw.google?.ttsModel || local.google?.ttsModel || DEFAULT_GOOGLE.ttsModel,
       voice: raw.google?.voice || local.google?.voice || DEFAULT_GOOGLE.voice,
+      podcastHostAVoice: raw.google?.podcastHostAVoice || local.google?.podcastHostAVoice || DEFAULT_GOOGLE.podcastHostAVoice,
+      podcastHostBVoice: raw.google?.podcastHostBVoice || local.google?.podcastHostBVoice || DEFAULT_GOOGLE.podcastHostBVoice,
       keySource: raw.google?.apiKey ? "settings.local.json" : envGoogleKey ? "environment" : null
     },
     search: {
@@ -201,6 +207,8 @@ async function getSettingsSummary() {
       imageModel: settings.google?.imageModel || DEFAULT_GOOGLE.imageModel,
       ttsModel: settings.google?.ttsModel || DEFAULT_GOOGLE.ttsModel,
       voice: settings.google?.voice || DEFAULT_GOOGLE.voice,
+      podcastHostAVoice: settings.google?.podcastHostAVoice || DEFAULT_GOOGLE.podcastHostAVoice,
+      podcastHostBVoice: settings.google?.podcastHostBVoice || DEFAULT_GOOGLE.podcastHostBVoice,
       voices: DEFAULT_GOOGLE.voices
     },
     media: settings.media,
@@ -434,17 +442,19 @@ async function testXiaomiConnection(input = {}) {
     const response = await fetch(`${xiaomi.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
+        "api-key": xiaomi.apiKey,
         Authorization: `Bearer ${xiaomi.apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: xiaomi.textModel,
+        model: xiaomi.textModel.toLowerCase(),
         messages: [
-          { role: "system", content: "Answer directly. No reasoning." },
           { role: "user", content: "Reply with exactly OK." }
         ],
         temperature: 0,
-        max_tokens: 64
+        max_completion_tokens: 64,
+        stream: false,
+        thinking: { type: "disabled" }
       })
     });
     const payload = await response.json().catch(() => null);
@@ -515,6 +525,8 @@ function normalizeSettings(settings = {}) {
   const minimax = {
     englishVoice: cleanModel(settings.minimax?.englishVoice, profile.minimax.englishVoice),
     chineseVoice: cleanModel(settings.minimax?.chineseVoice, profile.minimax.chineseVoice),
+    podcastHostAVoice: cleanModel(settings.minimax?.podcastHostAVoice, profile.minimax.podcastHostAVoice || DEFAULT_MINIMAX.podcastHostAVoice),
+    podcastHostBVoice: cleanModel(settings.minimax?.podcastHostBVoice, profile.minimax.podcastHostBVoice || DEFAULT_MINIMAX.podcastHostBVoice),
     musicTrackCount: clampTrackCount(settings.minimax?.musicTrackCount, profile.minimax.musicTrackCount)
   };
   return {
@@ -554,6 +566,8 @@ function normalizeSettings(settings = {}) {
       imageModel: cleanModel(settings.google?.imageModel, DEFAULT_GOOGLE.imageModel),
       ttsModel: cleanModel(settings.google?.ttsModel, DEFAULT_GOOGLE.ttsModel),
       voice: cleanModel(settings.google?.voice, DEFAULT_GOOGLE.voice),
+      podcastHostAVoice: cleanModel(settings.google?.podcastHostAVoice, DEFAULT_GOOGLE.podcastHostAVoice),
+      podcastHostBVoice: cleanModel(settings.google?.podcastHostBVoice, DEFAULT_GOOGLE.podcastHostBVoice),
       keySource: settings.google?.keySource || null
     },
     search: {
@@ -585,6 +599,8 @@ function normalizeProfiles(input = {}) {
         music: cleanModel(profile.minimax?.music, fallback.minimax.music),
         englishVoice: cleanModel(profile.minimax?.englishVoice, fallback.minimax.englishVoice),
         chineseVoice: cleanModel(profile.minimax?.chineseVoice, fallback.minimax.chineseVoice),
+        podcastHostAVoice: cleanModel(profile.minimax?.podcastHostAVoice, fallback.minimax.podcastHostAVoice || DEFAULT_MINIMAX.podcastHostAVoice),
+        podcastHostBVoice: cleanModel(profile.minimax?.podcastHostBVoice, fallback.minimax.podcastHostBVoice || DEFAULT_MINIMAX.podcastHostBVoice),
         musicTrackCount: clampTrackCount(profile.minimax?.musicTrackCount, fallback.minimax.musicTrackCount)
       },
       search: {
@@ -619,7 +635,12 @@ function normalizeTextModel(value, llmModel, fallback) {
 
 function normalizeXiaomiModel(value, fallback) {
   const text = typeof value === "string" ? value.trim() : "";
-  return (text || fallback).toLowerCase();
+  const model = text || fallback || "";
+  const canonical = new Map([
+    ...DEFAULT_XIAOMI.textModels.map((name) => [name.toLowerCase(), name]),
+    ...DEFAULT_XIAOMI.ttsModels.map((name) => [name.toLowerCase(), name])
+  ]);
+  return canonical.get(model.toLowerCase()) || model;
 }
 
 function normalizeProvider(value, fallback, allowed) {
@@ -657,7 +678,9 @@ async function writeLocalSettings(settings) {
       baseUrl: settings.google?.baseUrl || DEFAULT_GOOGLE.baseUrl,
       imageModel: settings.google?.imageModel || DEFAULT_GOOGLE.imageModel,
       ttsModel: settings.google?.ttsModel || DEFAULT_GOOGLE.ttsModel,
-      voice: settings.google?.voice || DEFAULT_GOOGLE.voice
+      voice: settings.google?.voice || DEFAULT_GOOGLE.voice,
+      podcastHostAVoice: settings.google?.podcastHostAVoice || DEFAULT_GOOGLE.podcastHostAVoice,
+      podcastHostBVoice: settings.google?.podcastHostBVoice || DEFAULT_GOOGLE.podcastHostBVoice
     },
     media: settings.media,
     search: {
