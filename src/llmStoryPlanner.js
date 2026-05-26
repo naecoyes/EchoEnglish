@@ -78,7 +78,7 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
     template ? formatTemplateForPrompt(template) : "",
     "Hard requirements:",
     "- Target exactly 15 minutes.",
-    "- Use 28-30 internal scenes.",
+    "- Use 16-24 internal scenes.",
     "- Each scene has exactly 4 English sentences.",
     "- Use 30-45 total background image beats, about 2-3 images per minute.",
     "- Each scene should normally have 1 imageBeat covering all 4 sentences. Use 2 imageBeats only when the story clearly changes location, action, or speaker focus inside that scene.",
@@ -119,16 +119,16 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     podcastMode
       ? "- For podcast mode, every scene still has exactly 4 sentences. Use varied turn patterns such as A,A,B,B or A,B,B,A when it sounds natural."
       : "",
-    "- Use 28-30 internal scenes. Each scene has exactly 4 English sentences.",
+    "- Use 16-24 internal scenes. Each scene has exactly 4 English sentences.",
     "- The story should naturally last about 15 minutes when read slowly with short pauses.",
     "- The video should use 30-45 total background image beats, about 2-3 images per minute. Do not create one image per sentence.",
     "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all 4 sentences; use two only for major visual changes.",
     "- Let the model decide image beat timing from the story flow by assigning sentenceStart and sentenceEnd for each imageBeat.",
-    "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a photorealistic image prompt.",
+    "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a concise photorealistic image prompt.",
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
     "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
-    "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition that leaves the lower third clean for subtitles.",
-    "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no UI.",
+    "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition with a natural, uncluttered bottom area.",
+    "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no UI, no black lower-third bar, no placeholder words like Your Text.",
     "- Avoid repeated generic wording. Each scene prompt must have a distinct place, object, camera angle, or action.",
     isPersonFocusedTopic(topic, template)
       ? "- Person-focused mode: keep the same public subject visually consistent. Prefer one-person portraits, public-stage photos, offices, documents, symbolic objects, and context shots. Do not generate multiple unrelated faces or group portraits unless the facts require a public group scene."
@@ -148,7 +148,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "summary": "string",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
-    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "80-120 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": 3, "durationNote": "covers the whole scene", "imagePrompt": "specific image prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
+    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": 3, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
     "  ]",
     "}",
     `Topic: ${topic}`,
@@ -273,16 +273,26 @@ function normalizeOutline(input, topic, minutes, source = "local", searchContext
 function normalizeStory(input, context) {
   const outline = normalizeOutline(context.outline || input, context.topic, context.targetDurationMinutes, context.source, null, context.template);
   const sections = Array.isArray(input?.sections) ? input.sections : [];
-  const normalizedSections = sections
+  let normalizedSections = sections
     .map((section, index) => normalizeSection(section, index, input?.title || outline.title))
     .filter((section) => section.sentences.length === 4 && section.translations.length === section.sentences.length)
     .slice(0, 30);
+  const generationWarnings = [];
 
-  if (normalizedSections.length < 28) {
-    if (String(context.source || "").startsWith("llm")) {
-      throw new Error(`LLM draft was incomplete: expected 28-30 scenes with 4 translated sentences each, received ${normalizedSections.length}. Try again or revise the prompt/model settings.`);
-    }
+  if (normalizedSections.length < 8) {
     return fallbackStoryFromOutline(outline, context);
+  }
+
+  if (normalizedSections.length < 16) {
+    const receivedCount = normalizedSections.length;
+    normalizedSections = completeSectionsFromOutline(normalizedSections, outline, 16);
+    generationWarnings.push(`LLM returned ${receivedCount} valid scenes; EchoEnglish auto-filled ${normalizedSections.length - receivedCount} outline-based scenes so the draft can be reviewed.`);
+  }
+
+  const imageBeatCount = countImageBeats(normalizedSections);
+  if (imageBeatCount < 30) {
+    normalizedSections = ensureImageBeatTarget(normalizedSections, outline, 30);
+    generationWarnings.push(`LLM returned ${imageBeatCount} image beats; EchoEnglish split story scenes into ${countImageBeats(normalizedSections)} visual beats for the 2-3 images per minute target.`);
   }
 
   return enrichStoryVocabulary({
@@ -304,12 +314,64 @@ function normalizeStory(input, context) {
       visualStyle: cleanText(input?.storyboardDesign?.visualStyle) || outline.visualStyle,
       learningFocus: cleanText(input?.storyboardDesign?.learningFocus) || "beginner story listening, useful words, and bilingual meaning support",
       framePattern: cleanText(input?.storyboardDesign?.framePattern) || "Continuous story narration with cinematic image backgrounds and compact vocabulary overlays",
-      targetLength: cleanText(input?.storyboardDesign?.targetLength) || "15-20 minutes without repeated teaching rounds"
+      targetLength: cleanText(input?.storyboardDesign?.targetLength) || "15-20 minutes without repeated teaching rounds",
+      repairWarning: generationWarnings[0] || ""
     },
+    generationWarnings,
     opening: [],
     sections: normalizedSections,
     closing: []
   });
+}
+
+function completeSectionsFromOutline(sections, outline, targetScenes) {
+  const completed = sections.slice(0, Math.max(0, targetScenes));
+  const beats = Array.isArray(outline.storyBeats) && outline.storyBeats.length
+    ? outline.storyBeats
+    : fallbackOutline(outline.title || "Story", outline.targetMinutes || 15, outline.template).storyBeats;
+
+  while (completed.length < targetScenes) {
+    const index = completed.length;
+    const beat = beats[index % beats.length];
+    const nextBeat = beats[(index + 1) % beats.length];
+    completed.push(fallbackScene(outline, beat, nextBeat, index));
+  }
+
+  return completed;
+}
+
+function ensureImageBeatTarget(sections, outline, minimumBeats) {
+  const updated = sections.map((section) => ({ ...section, imageBeats: [...(section.imageBeats || [])] }));
+  let total = countImageBeats(updated);
+
+  for (const section of updated) {
+    if (total >= minimumBeats) break;
+    if (!Array.isArray(section.sentences) || section.sentences.length < 4 || section.imageBeats.length >= 2) continue;
+
+    section.imageBeats = [
+      {
+        sentenceStart: 0,
+        sentenceEnd: 1,
+        durationNote: "first half of the scene",
+        imagePrompt: buildPhotoPrompt(outline.title, `${section.visual}, first story beat`, section.sentences.slice(0, 2))
+      },
+      {
+        sentenceStart: 2,
+        sentenceEnd: 3,
+        durationNote: "second half of the scene",
+        imagePrompt: buildPhotoPrompt(outline.title, `${section.visual}, second story beat`, section.sentences.slice(2, 4))
+      }
+    ];
+    section.imageBeatSize = 2;
+    section.imageBeatCount = 2;
+    total += 1;
+  }
+
+  return updated;
+}
+
+function countImageBeats(sections) {
+  return sections.reduce((total, section) => total + Math.max(1, Array.isArray(section.imageBeats) ? section.imageBeats.length : 0), 0);
 }
 
 function normalizeSection(section, index, storyTitle) {
@@ -576,9 +638,9 @@ function buildPhotoPrompt(storyTitle, visual, sentences = []) {
     sentences.length ? `Moment: ${sentences.slice(0, 3).join(" ")}` : "",
     "Shot direction: one clear main subject, believable real-world location, visible story object, natural human scale, documentary realism.",
     "Camera: 35mm or 50mm lens look, cinematic depth of field, high dynamic range, realistic texture, no oversaturated fantasy colors.",
-    "Composition: strong upper and middle frame detail, clean lower third for bilingual subtitles, no crowded text-like patterns.",
+    "Composition: strong upper and middle frame detail, natural uncluttered bottom area, no artificial lower-third panel or text banner.",
     "Lighting: natural or motivated cinematic light, soft contrast, realistic shadows, professional production still quality.",
-    "No text, no subtitles, no captions, no watermark, no logo, no UI elements, no cartoon, no flat vector art, no slide design."
+    "No text, no subtitles, no captions, no watermark, no logo, no UI elements, no black lower-third bar, no placeholder words like Your Text, no cartoon, no flat vector art, no slide design."
   ].filter(Boolean).join(" ");
 }
 

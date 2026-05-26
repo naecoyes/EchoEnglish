@@ -169,10 +169,6 @@ a {
   pointer-events: none;
 }
 
-.bg-black {
-  background: #000;
-}
-
 .mix-blend-overlay {
   mix-blend-mode: overlay;
 }
@@ -267,59 +263,6 @@ a {
   grid-template-rows: repeat(6, minmax(0, 1fr));
   gap: 5px;
   width: 100%;
-}
-
-.nav-active-glass,
-.glass-nav > .bg-black {
-  pointer-events: none;
-}
-
-.nav-active-glass {
-  width: 74px;
-  height: 68px;
-}
-
-.nav-active-glass .glass {
-  width: 74px;
-  height: 68px;
-  border: 1px solid rgba(255, 255, 255, 0.88);
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.4)),
-    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 1), transparent 42%),
-    rgba(255, 255, 255, 0.38);
-  box-shadow:
-    0 18px 42px rgba(0, 122, 255, 0.18),
-    0 8px 22px rgba(15, 23, 42, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 -16px 22px rgba(0, 122, 255, 0.08),
-    inset 0 0 18px rgba(255, 255, 255, 0.72) !important;
-}
-
-.nav-active-glass .glass::before {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: inherit;
-  background:
-    radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.95), transparent 28%),
-    linear-gradient(115deg, rgba(255, 255, 255, 0.74), transparent 38% 64%, rgba(255, 255, 255, 0.3));
-  pointer-events: none;
-  content: "";
-  mix-blend-mode: screen;
-}
-
-.nav-active-glass .glass__warp {
-  opacity: 0.95;
-  background:
-    linear-gradient(140deg, rgba(255, 255, 255, 0.34), rgba(0, 122, 255, 0.08)),
-    rgba(255, 255, 255, 0.14);
-}
-
-.nav-active-fill {
-  display: block;
-  width: 74px;
-  height: 68px;
-  border-radius: 28px;
 }
 
 .nav-button {
@@ -850,9 +793,80 @@ button:disabled {
   line-height: 1.45;
 }
 
+.youtube-copy-section {
+  margin-top: 8px;
+}
+
+.youtube-copy-toggle {
+  width: 100%;
+  text-align: center;
+}
+
+.youtube-copy-content {
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid rgba(0, 122, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.5);
+  display: grid;
+  gap: 14px;
+}
+
+.youtube-copy-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.youtube-copy-field p,
+.youtube-copy-field pre {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.youtube-copy-field pre {
+  font-family: inherit;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.youtube-copy-field ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.youtube-copy-field .youtube-tags {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .video-stage {
   display: grid;
   gap: 12px;
+}
+
+.title-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.download-btn {
+  padding: 6px 16px;
+  font-size: 12px;
+  text-decoration: none;
 }
 
 video {
@@ -930,8 +944,7 @@ video {
   font-weight: 760;
 }
 
-.output-grid,
-.recent-grid {
+.output-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
@@ -1451,11 +1464,6 @@ video {
     gap: 3px;
   }
 
-  .nav-active-glass,
-  .glass-nav > .bg-black {
-    display: none;
-  }
-
   .nav-button {
     min-height: 58px;
     border-radius: 28px;
@@ -1630,8 +1638,7 @@ video {
     padding: 13px;
   }
 
-  .output-grid,
-  .recent-grid {
+  .output-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -77,7 +77,7 @@ async function generateStoryWorkflow(options = {}) {
           apiKey: settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey,
           baseUrl: settings.xiaomi?.baseUrl,
           ttsBaseUrl: settings.xiaomi?.ttsBaseUrl,
-          model: settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
+          model: settings.xiaomi?.ttsModel || "mimo-v2.5-tts",
           voice: options.xiaomiVoice || settings.xiaomi?.voice || "mimo_default",
           speed: Number(options.speed || 1.0),
           requestIntervalMs: options.ttsRequestIntervalMs,
@@ -201,6 +201,7 @@ async function generateStoryWorkflow(options = {}) {
         apiKey: settings.google?.apiKey,
         baseUrl: settings.google?.baseUrl,
         model: options.googleImageModel || settings.google?.imageModel,
+        batchSize: options.batchImageCount || 3,
         onProgress: (progress) => reportImageProgress(options, logs, progress)
       })
       : await generateImages({
@@ -210,6 +211,7 @@ async function generateStoryWorkflow(options = {}) {
         model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
         aspectRatio: "16:9",
         promptOptimizer: true,
+        batchSize: options.batchImageCount || 3,
         onProgress: (progress) => reportImageProgress(options, logs, progress)
       });
     if (isPodcastStory(story)) {
@@ -302,6 +304,8 @@ async function generateStoryWorkflow(options = {}) {
     qualityReport,
     youtubeCopy,
     files: {
+      draftJson: path.join(outputDir, "draft.json"),
+      draftMd: path.join(outputDir, "draft.md"),
       scriptJson: path.join(outputDir, "script.json"),
       scriptMd: path.join(outputDir, "script.md"),
       imagePrompts: path.join(outputDir, "image-prompts.md"),
@@ -426,6 +430,13 @@ async function findImageInDirectory(imagesDir, sceneId) {
   for (const candidate of candidates) {
     if (await pathExists(candidate)) return candidate;
   }
+  try {
+    const entries = await fs.readdir(imagesDir);
+    const batch = entries
+      .filter((entry) => entry.startsWith(`${sceneId}_batch_`) && /\.(png|jpe?g|webp)$/i.test(entry))
+      .sort()[0];
+    if (batch) return path.join(imagesDir, batch);
+  } catch {}
   return null;
 }
 
@@ -536,6 +547,7 @@ function getUniqueImageScenes(story) {
       if (seen.has(key)) continue;
       const moment = getSectionBeatMoment(story, section, beatIndex);
       const beat = imageBeats[beatIndex] || {};
+      const imagePrompt = buildBeatImagePrompt(story, section, beatIndex);
       seen.set(key, {
         id: buildSceneImageId(baseIndex, variantIndex, beatIndex),
         visual: section.visual,
@@ -545,7 +557,8 @@ function getUniqueImageScenes(story) {
         visualStyle: story.storyboardDesign?.visualStyle || story.outline?.visualStyle,
         moment,
         durationNote: beat.durationNote || "",
-        imagePrompt: buildBeatImagePrompt(story, section, beatIndex)
+        imagePrompt,
+        hasPeople: PEOPLE_PATTERN.test([section.visual || "", imagePrompt || "", moment || ""].join(" "))
       });
     }
   });
@@ -578,8 +591,8 @@ function buildPodcastHostScenes(story) {
         `Topic: ${topic}.`,
         "Subject: one warm confident female podcast host at a desk microphone.",
         "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
-        "Composition: host face and microphone visible, enough negative space for captions in the lower third.",
-        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no cartoon."
+        "Composition: host face and microphone visible, natural uncluttered bottom area, no artificial lower-third panel.",
+        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no black caption bar, no placeholder text, no cartoon."
       ].join(" ")
     },
     {
@@ -595,8 +608,8 @@ function buildPodcastHostScenes(story) {
         `Topic: ${topic}.`,
         "Subject: one calm trustworthy male podcast host at a desk microphone.",
         "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
-        "Composition: host face and microphone visible, enough negative space for captions in the lower third.",
-        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no cartoon."
+        "Composition: host face and microphone visible, natural uncluttered bottom area, no artificial lower-third panel.",
+        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no black caption bar, no placeholder text, no cartoon."
       ].join(" ")
     }
   ];
@@ -697,9 +710,9 @@ function buildBeatImagePrompt(story, section, beatIndex) {
     podcast ? "Podcast mode: show two hosts in a premium podcast studio, microphones, warm desk lighting, topic-related background screen with no readable text." : "",
     !podcast ? "Non-podcast mode: do not show podcast hosts, microphones, headphones, recording studios, radio booths, talk-show desks, presenter setups, or interview lighting unless the exact sentence explicitly requires them." : "",
     "Camera direction: realistic documentary photography, 35mm lens look, subtle depth of field, natural perspective, professional lighting, detailed foreground and background.",
-    "Composition: one clear focal subject, strong visual story action, clean lower third for subtitles, no clutter over the bottom caption zone.",
+    "Composition: one clear focal subject, strong visual story action, natural uncluttered bottom area with real scene content, no artificial lower-third panel.",
     "Image quality: high detail, sharp but natural, cinematic color grade, realistic skin/material texture, no black frames, no abstract gradients.",
-    "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no UI, no slide deck, no cartoon, no flat vector illustration.",
+    "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no UI, no black lower-third bar, no placeholder words like Your Text, no slide deck, no cartoon, no flat vector illustration.",
     `Distinctness: make this beat visually different from nearby beats by changing camera angle, distance, subject pose, object focus, or lighting. Beat ${beatIndex + 1}.`
   ];
   return parts.filter(Boolean).join(" ");
@@ -708,6 +721,13 @@ function buildBeatImagePrompt(story, section, beatIndex) {
 function isPersonFocusedStory(story) {
   return story?.template?.id === "founder-biography"
     || /\b(founder|biography|leader|ceo|profile|life of|elon musk|steve jobs|lei jun|bill gates|person)\b/i.test(String(story?.topic || story?.title || ""));
+}
+
+const PEOPLE_PATTERN = /\b(person|man|woman|boy|girl|founder|ceo|portrait|face|host|student|team|people|crowd|family|child|worker|doctor|teacher|engineer|artist|scientist|president|leader|hero|character|speaker|presenter|interviewee|passenger|driver|chef|nurse|officer|soldier|king|queen|prince|princess|mother|father|brother|sister|friend|neighbor|stranger|customer|waiter|he |she |his |her |they |them |their |emma|ben|mia|lily)\b/i;
+
+function hasScenePeople(scene) {
+  const text = [scene.visual || "", scene.imagePrompt || "", scene.moment || ""].join(" ");
+  return PEOPLE_PATTERN.test(text);
 }
 
 function buildMusicPrompt(story) {
@@ -825,6 +845,7 @@ function pushLog(logs, message) {
 module.exports = {
   generateStoryWorkflow,
   getUniqueImageScenes,
+  hasScenePeople,
   resolveTtsProvider,
   formatDuration
 };

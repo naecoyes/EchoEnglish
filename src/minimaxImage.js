@@ -8,7 +8,7 @@ const { validateImageOrThrow } = require("./imageQuality");
 const API_URL = "https://api.minimaxi.com/v1/image_generation";
 const MAX_PROMPT_CHARS = 1450;
 
-async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer, onProgress }) {
+async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3, onProgress }) {
   if (!apiKey) {
     throw new Error("MINIMAX_API_KEY is required for MiniMax image generation.");
   }
@@ -16,6 +16,7 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
   const imagesDir = path.join(outputDir, "images");
   await ensureDir(imagesDir);
   const manifest = await initImageManifest(outputDir, scenes);
+  await removeStaleSceneImages(imagesDir, scenes.map((scene) => scene.id));
 
   const results = [];
   for (let index = 0; index < scenes.length; index += 1) {
@@ -78,7 +79,8 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
         apiKey,
         model,
         aspectRatio,
-        promptOptimizer
+        promptOptimizer,
+        batchSize
       });
       imageUrl = generated.imageUrl;
       outputPath = generated.outputPath;
@@ -117,7 +119,14 @@ async function reportProgress(onProgress, progress) {
   await onProgress(progress);
 }
 
-async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
+async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3 }) {
+  if (scene.hasPeople && batchSize > 1) {
+    return generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize: clampBatchSize(batchSize) });
+  }
+  return generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer });
+}
+
+async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await updateImageManifest(outputDir, scene.id, {
@@ -126,14 +135,15 @@ async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, mod
       error: null
     });
     try {
-      const imageUrl = await requestImage({
+      const imageUrls = await requestImage({
         apiKey,
         model,
         prompt: prepareMiniMaxPrompt(scene),
         aspectRatio,
-        promptOptimizer
+        promptOptimizer,
+        batchSize: 1
       });
-      const bytes = await downloadImageWithRetry(imageUrl, scene.id);
+      const bytes = await downloadImageWithRetry(imageUrls[0], scene.id);
       const outputPath = path.join(imagesDir, `${scene.id}${detectImageExtension(bytes)}`);
       await fs.writeFile(outputPath, bytes);
       const quality = await validateImageOrThrow(outputPath);
@@ -141,7 +151,79 @@ async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, mod
         quality,
         error: null
       });
-      return { imageUrl, outputPath, quality };
+      return { imageUrl: imageUrls[0], outputPath, quality };
+    } catch (error) {
+      lastError = error;
+      await updateImageManifest(outputDir, scene.id, {
+        status: "running",
+        error: error.message,
+        quality: error.quality || null
+      });
+      await deleteSceneImage(imagesDir, scene.id);
+      if (!isImageQualityError(error)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize }) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await updateImageManifest(outputDir, scene.id, {
+      status: "running",
+      attempts: attempt,
+      error: null,
+      batchSize
+    });
+    try {
+      const imageUrls = await requestImage({
+        apiKey,
+        model,
+        prompt: prepareMiniMaxPrompt(scene),
+        aspectRatio,
+        promptOptimizer,
+        batchSize
+      });
+
+      const candidates = [];
+      for (let i = 0; i < imageUrls.length; i += 1) {
+        try {
+          const bytes = await downloadImageWithRetry(imageUrls[i], `${scene.id}-batch-${i}`);
+          const ext = detectImageExtension(bytes);
+          const batchPath = path.join(imagesDir, `${scene.id}_batch_${String(i + 1).padStart(2, "0")}${ext}`);
+          await fs.writeFile(batchPath, bytes);
+          candidates.push({ path: batchPath });
+        } catch {
+          continue;
+        }
+      }
+
+      if (candidates.length === 0) {
+        throw new Error(`All ${imageUrls.length} batch images failed to download for ${scene.id}.`);
+      }
+
+      const savedPaths = [];
+      for (const candidate of candidates) {
+        try {
+          await validateImageOrThrow(candidate.path);
+          savedPaths.push(candidate.path);
+        } catch {
+          await fs.unlink(candidate.path).catch(() => {});
+        }
+      }
+
+      if (savedPaths.length === 0) {
+        throw new Error(`All ${candidates.length} batch images failed quality checks for ${scene.id}.`);
+      }
+
+      await updateImageManifest(outputDir, scene.id, {
+        quality: null,
+        batchSize,
+        batchCount: savedPaths.length,
+        error: null
+      });
+
+      return { imageUrl: imageUrls[0], outputPath: savedPaths[0], quality: null };
     } catch (error) {
       lastError = error;
       await updateImageManifest(outputDir, scene.id, {
@@ -183,14 +265,14 @@ function detectImageExtension(bytes) {
   return ".png";
 }
 
-async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimizer }) {
+async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimizer, batchSize = 1 }) {
   const safePrompt = limitPrompt(prompt, MAX_PROMPT_CHARS);
   const body = {
     model,
     prompt: safePrompt,
     aspect_ratio: aspectRatio,
     response_format: "url",
-    n: 1,
+    n: clampBatchSize(batchSize),
     prompt_optimizer: promptOptimizer,
     aigc_watermark: false
   };
@@ -210,12 +292,12 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
     throw new Error(`MiniMax image API failed: ${statusMsg}`);
   }
 
-  const imageUrl = payload?.data?.image_urls?.[0];
-  if (!imageUrl) {
-    throw new Error("MiniMax image response did not include an image URL.");
+  const imageUrls = payload?.data?.image_urls || [];
+  if (imageUrls.length === 0) {
+    throw new Error("MiniMax image response did not include any image URLs.");
   }
 
-  return imageUrl;
+  return imageUrls;
 }
 
 function prepareMiniMaxPrompt(scene) {
@@ -230,8 +312,8 @@ function prepareMiniMaxPrompt(scene) {
     scene.visual ? `Scene: ${limitPrompt(scene.visual, 360)}.` : "",
     scene.moment ? `Moment: ${limitPrompt(scene.moment, 280)}.` : "",
     "Real documentary photography, one clear focal subject, believable real-world location, natural human scale, 35mm lens look, cinematic depth of field, professional lighting, realistic texture.",
-    "Keep lower third clean for bilingual subtitles.",
-    "No text, no readable signs, no subtitles, no logos, no watermark, no UI, no cartoon, no vector art, no PPT slide."
+    "Keep the bottom area natural and uncluttered with real scene content.",
+    "No text, no readable signs, no subtitles, no logos, no watermark, no UI, no black lower-third bar, no placeholder words like Your Text, no cartoon, no vector art, no PPT slide."
   ].filter(Boolean).join(" ");
 
   if (compact.length <= MAX_PROMPT_CHARS) return compact;
@@ -269,18 +351,6 @@ async function downloadImageWithRetry(imageUrl, sceneId) {
   }
 }
 
-function buildPrompt(scene) {
-  return [
-    "Create a 16:9 photorealistic cinematic still image for an English shadowing video.",
-    scene.title ? `Video title: ${scene.title}.` : "",
-    scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
-    scene.visualStyle ? `Visual style: ${scene.visualStyle}.` : "",
-    `Scene: ${scene.visual || "clear documentary story moment"}.`,
-    "Use realistic documentary photography, one clear focal subject, real location, motivated cinematic light, 35mm lens look, high detail, natural color grade.",
-    "Leave the lower third visually clean for subtitles. No text, no readable signs, no subtitles, no logos, no watermark, no UI, no cartoon, no vector art, no PPT slide."
-  ].join(" ");
-}
-
 async function deleteSceneImage(imagesDir, sceneId) {
   for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
     const candidate = path.join(imagesDir, `${sceneId}${ext}`);
@@ -288,10 +358,45 @@ async function deleteSceneImage(imagesDir, sceneId) {
       await fs.unlink(candidate).catch(() => {});
     }
   }
+  await deleteBatchTempFiles(imagesDir, sceneId);
 }
 
 function isImageQualityError(error) {
   return Boolean(error?.quality);
+}
+
+function clampBatchSize(n) {
+  const size = Number(n);
+  if (!Number.isFinite(size) || size < 1) return 1;
+  return Math.min(4, Math.max(1, Math.round(size)));
+}
+
+async function deleteBatchTempFiles(imagesDir, sceneId) {
+  const prefix = `${sceneId}_batch_`;
+  try {
+    const entries = await fs.readdir(imagesDir);
+    for (const entry of entries) {
+      if (entry.startsWith(prefix)) {
+        await fs.unlink(path.join(imagesDir, entry)).catch(() => {});
+      }
+    }
+  } catch {}
+}
+
+async function removeStaleSceneImages(imagesDir, sceneIds) {
+  const allowed = new Set(sceneIds);
+  try {
+    const entries = await fs.readdir(imagesDir);
+    for (const entry of entries) {
+      if (!/\.(png|jpe?g|webp)$/i.test(entry)) continue;
+      const sceneId = entry
+        .replace(/\.(png|jpe?g|webp)$/i, "")
+        .replace(/_batch_\d+$/i, "");
+      if (!allowed.has(sceneId)) {
+        await fs.unlink(path.join(imagesDir, entry)).catch(() => {});
+      }
+    }
+  } catch {}
 }
 
 module.exports = {

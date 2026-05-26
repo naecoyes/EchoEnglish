@@ -108,26 +108,70 @@ MiniMax stack (stable default):
 Xiaomi MiMo stack (proven alternative):
 
 - Text: Xiaomi `mimo-v2.5-pro`
-- TTS: Xiaomi `mimo-v2.5-tts` (endpoint: `/chat/completions`, not `/audio/speech`)
+- TTS: Xiaomi `mimo-v2.5-tts` through `POST {ttsBaseUrl}/chat/completions`
 - Voice: `mimo_default`, or podcast hosts `Mia` / `Milo`
 - Image: MiniMax `image-01` (Xiaomi does not provide an image API)
 - Music: MiniMax `music-2.6`
 
 ### Xiaomi MiMo TTS Details
 
-MiMo TTS uses a chat-completions style API, not the OpenAI-compatible `/audio/speech` endpoint:
+MiMo text generation and MiMo TTS are both chat-completions style calls, but they must be configured carefully. The working Token Plan setup verified in this project is:
+
+| Field | Recommended value | Notes |
+| --- | --- | --- |
+| Main API base | `https://token-plan-sgp.xiaomimimo.com/v1` | Used for MiMo text generation. |
+| Text model | `mimo-v2.5-pro` | Normalized internally to `MiMo-V2.5-Pro` for text calls. |
+| TTS base | `https://token-plan-sgp.xiaomimimo.com/v1` | Token Plan keys work here. Do not force Token Plan keys to `api.xiaomimimo.com`. |
+| TTS model | `mimo-v2.5-tts` | `MiMo-V2.5-TTS` from Settings is normalized to lowercase. |
+| Narration voice | `mimo_default` | Podcast mode uses `Mia` and `Milo`. |
+
+The TTS request uses `/chat/completions`, not the legacy `/audio/speech` endpoint:
 
 ```text
 POST {ttsBaseUrl}/chat/completions
 Authorization: Bearer {apiKey}
+api-key: {apiKey}
 {
   "model": "mimo-v2.5-tts",
   "messages": [{ "role": "assistant", "content": "Text to speak" }],
-  "voice": "mimo_default"
+  "modalities": ["text", "audio"],
+  "audio": {
+    "voice": "mimo_default",
+    "format": "wav"
+  }
 }
 ```
 
 Response returns base64 audio at `choices[0].message.audio.data`.
+
+Recommended local settings shape:
+
+```json
+{
+  "provider": "xiaomi",
+  "xiaomi": {
+    "apiKey": "tp-...",
+    "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "textModel": "mimo-v2.5-pro",
+    "ttsModel": "MiMo-V2.5-TTS",
+    "voice": "mimo_default",
+    "podcastHostAVoice": "Mia",
+    "podcastHostBVoice": "Milo",
+    "ttsBaseUrl": "https://token-plan-sgp.xiaomimimo.com/v1"
+  },
+  "media": {
+    "ttsProvider": "xiaomi"
+  }
+}
+```
+
+The runtime normalizes this to:
+
+```text
+textModel: MiMo-V2.5-Pro
+ttsModel: mimo-v2.5-tts
+tts endpoint: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
+```
 
 Available voices:
 
@@ -139,7 +183,25 @@ Available voices:
 | `Chloe`, `Dean` | English voices |
 | `冰糖`, `茉莉`, `苏打`, `白桦` | Chinese voices |
 
-Model names must be lowercase (e.g. `mimo-v2.5-tts`, not `MiMo-V2.5-TTS`). The API rejects uppercase model identifiers.
+For TTS, model names must be lowercase on the wire. The Settings page may show `MiMo-V2.5-TTS`, but the backend sends `mimo-v2.5-tts`.
+
+### Google Imagen Notes
+
+Google Imagen uses:
+
+```text
+POST {baseUrl}/models/{imageModel}:predict
+x-goog-api-key: {apiKey}
+```
+
+EchoEnglish parses both SDK-style and REST-style image responses:
+
+- `generatedImages[].image.imageBytes`
+- `generatedImages[].image.bytesBase64Encoded`
+- `predictions[].bytesBase64Encoded`
+- nested base64 image fields
+
+If Google returns `{}` or no image bytes, check that the API key has Imagen access, billing/quota is enabled, and the selected model is available for the key. The default model is `imagen-4.0-generate-001`.
 
 ## Quick Start
 
@@ -218,6 +280,34 @@ The Recent page is a local output manager:
 - Delete an output folder.
 - See completed, failed, running, and draft directories.
 
+## Batch Image Generation (套图)
+
+Scenes containing people (detected by keywords like person, man, woman, face, portrait, etc.) automatically generate multiple images (up to 4) per scene. The video composer cycles through batch images based on sentence position, creating visual variety for human-focused scenes.
+
+Non-people scenes generate a single image. Batch images are saved with `_batch_` naming:
+
+```text
+images/scene-001-a.jpg           # single image (no people)
+images/scene-002-a_batch_01.jpg  # batch image 1 (has people)
+images/scene-002-a_batch_02.jpg  # batch image 2
+images/scene-002-a_batch_03.jpg  # batch image 3
+```
+
+Both MiniMax and Google Imagen support batch generation. Configure the image provider in Settings -> Media.
+
+## YouTube Copy
+
+Each generated video includes YouTube publishing copy (`youtube-copy.json` and `youtube-copy.md`) with:
+
+- Title (prefixed with "英语口语练习-")
+- Description in English and Chinese
+- Chapters with timestamps
+- Tags
+- Pinned comment in English and Chinese
+- Thumbnail text suggestions
+
+The YouTube copy is viewable in the Preview page via the "Show YouTube Copy" button.
+
 ## Video UI
 
 Generated videos include:
@@ -288,13 +378,19 @@ Use Re-render Video UI from Preview. It reuses existing assets and avoids extra 
 
 ### Xiaomi MiMo TTS errors
 
-**404 Not Found**: MiMo TTS does not use the OpenAI-compatible `/audio/speech` endpoint. It uses `/chat/completions` with a messages-based payload. Ensure `ttsBaseUrl` points to the correct base (e.g. `https://token-plan-sgp.xiaomimimo.com/v1`), and the code appends `/chat/completions`.
+**404 Not Found**: MiMo Token Plan TTS does not use `/audio/speech`. It uses `/chat/completions` with a messages-based audio payload. Keep `ttsBaseUrl` as a base URL such as `https://token-plan-sgp.xiaomimimo.com/v1`; the backend appends `/chat/completions`.
 
-**401 Unauthorized**: The dedicated TTS API key may not work. Use the main Xiaomi API key for both text and TTS.
+**401 Unauthorized / Invalid API Key**: Do not send a Token Plan `tp-...` key to `https://api.xiaomimimo.com/v1`. The verified Token Plan combination is `tp-...` key + `https://token-plan-sgp.xiaomimimo.com/v1/chat/completions`. If a separate `sk-...` MiMo key is used, test it in Settings before switching endpoints.
 
-**"Not supported model"**: Model names must be lowercase. `MiMo-V2.5-TTS` will be rejected; use `mimo-v2.5-tts`. The code normalizes this automatically.
+**"Not supported model"**: TTS model names must be lowercase. `MiMo-V2.5-TTS` in Settings is accepted, but the backend sends `mimo-v2.5-tts`.
 
 **Voice "alloy" not found**: MiMo does not have an `alloy` voice. Use `mimo_default` for narration, or `Mia`/`Milo` for podcast hosts.
+
+Quick local TTS smoke test:
+
+```bash
+node -e 'const {readLocalSettings}=require("./src/settingsStore"); const {createAudio}=require("./src/xiaomiTts"); (async()=>{const s=await readLocalSettings(); const r=await createAudio({readingItems:[{id:"test",text:"Hello, welcome to EchoEnglish.",ttsText:"Hello, welcome to EchoEnglish.",language:"en",pauseAfterSeconds:0}],outputDir:"/tmp/echoenglish-xiaomi-tts-test",apiKey:s.xiaomi.ttsApiKey||s.xiaomi.apiKey,baseUrl:s.xiaomi.baseUrl,ttsBaseUrl:s.xiaomi.ttsBaseUrl,model:s.xiaomi.ttsModel,voice:"Mia",logs:[]}); console.log(r.provider,r.model,r.audioPath);})()'
+```
 
 ## Development
 

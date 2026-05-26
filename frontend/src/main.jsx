@@ -478,7 +478,7 @@ function getActiveConfigBadges(config) {
 function formatTtsConfig(config, settings) {
   const provider = settings.media?.ttsProvider || config?.media?.ttsProvider || "minimax";
   if (provider === "google") return `Google ${config?.google?.ttsModel || settings.google?.ttsModel || "gemini-2.5-flash-preview-tts"}`;
-  if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS"}`;
+  if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "mimo-v2.5-tts"}`;
   return settings.models?.tts || "speech-2.8-hd";
 }
 
@@ -703,39 +703,27 @@ function estimateImageBeats(draft) {
   }, 0);
 }
 
-function OutlineCard({ outline }) {
-  return (
-    <div className="outline-card">
-      <h2>{outline.title}</h2>
-      <p>{outline.summary}</p>
-      <div className="chip-row">
-        {[outline.genre, outline.mainCharacter, outline.setting, outline.source].filter(Boolean).map((item) => (
-          <span key={item}>{item}</span>
-        ))}
-      </div>
-      <ol className="beat-list">
-        {(outline.storyBeats || []).slice(0, 8).map((beat) => <li key={beat}>{beat}</li>)}
-      </ol>
-    </div>
-  );
-}
-
 function PreviewPage({ output }) {
   const slug = slugFromOutputs(output?.outputs);
   const [videoVersion, setVideoVersion] = useState(0);
   const [rerenderState, setRerenderState] = useState("");
   const [stats, setStats] = useState(null);
+  const [youtubeCopy, setYoutubeCopy] = useState(null);
+  const [showYoutubeCopy, setShowYoutubeCopy] = useState(false);
 
   useEffect(() => {
     setVideoVersion(0);
     setRerenderState("");
     setStats(null);
+    setYoutubeCopy(null);
+    setShowYoutubeCopy(false);
     if (!output?.outputs?.scriptJson) return undefined;
     let cancelled = false;
     Promise.all([
       fetchJson(`/api/media-info?path=${encodeURIComponent(output.outputs.video)}`).catch(() => ({ durationSeconds: 0 })),
-      fetchJson(output.outputs.scriptJson).catch(() => null)
-    ]).then(([media, script]) => {
+      fetchJson(output.outputs.scriptJson).catch(() => null),
+      output.outputs.youtubeCopyJson ? fetchJson(output.outputs.youtubeCopyJson).catch(() => null) : Promise.resolve(null)
+    ]).then(([media, script, ytCopy]) => {
       if (cancelled) return;
       const sections = script?.sections || [];
       const sentenceCount = sections.reduce((total, section) => total + (section.sentences?.length || 0), 0);
@@ -747,11 +735,12 @@ function PreviewPage({ output }) {
         sentenceCount,
         vocabularyCount
       });
+      if (ytCopy) setYoutubeCopy(ytCopy);
     });
     return () => {
       cancelled = true;
     };
-  }, [output?.outputs?.scriptJson, output?.outputs?.video]);
+  }, [output?.outputs?.scriptJson, output?.outputs?.video, output?.outputs?.youtubeCopyJson]);
 
   async function handleRerenderUi() {
     if (!slug) return;
@@ -773,9 +762,14 @@ function PreviewPage({ output }) {
           <h2>{output?.title || "No video selected"}</h2>
         </div>
         {output?.outputs?.video && (
-          <button className="ghost-action" type="button" onClick={handleRerenderUi}>
-            Re-render Video UI
-          </button>
+          <div className="title-actions">
+            <button className="ghost-action" type="button" onClick={handleRerenderUi}>
+              Re-render Video UI
+            </button>
+            <a className="ghost-action download-btn" href={output.outputs.video} download={`${output.title || "video"}.mp4`}>
+              Download
+            </a>
+          </div>
         )}
       </div>
       {output?.outputs?.video && (
@@ -790,6 +784,63 @@ function PreviewPage({ output }) {
         <VideoPlayer src={output.outputs.video} cacheKey={videoVersion} title={output.title} />
       ) : (
         <EmptyState title="Select or generate a video" text="Open a recent output or generate a new story to preview final.mp4 here." />
+      )}
+      {youtubeCopy && (
+        <div className="youtube-copy-section">
+          <button
+            className="ghost-action youtube-copy-toggle"
+            type="button"
+            onClick={() => setShowYoutubeCopy(!showYoutubeCopy)}
+          >
+            {showYoutubeCopy ? "Hide" : "Show"} YouTube Copy
+          </button>
+          {showYoutubeCopy && (
+            <div className="youtube-copy-content">
+              <div className="youtube-copy-field">
+                <label>Title</label>
+                <p>{youtubeCopy.title}</p>
+              </div>
+              <div className="youtube-copy-field">
+                <label>Description (English)</label>
+                <pre>{youtubeCopy.description}</pre>
+              </div>
+              {youtubeCopy.descriptionZh && (
+                <div className="youtube-copy-field">
+                  <label>Description (中文)</label>
+                  <pre>{youtubeCopy.descriptionZh}</pre>
+                </div>
+              )}
+              {youtubeCopy.chapters?.length > 0 && (
+                <div className="youtube-copy-field">
+                  <label>Chapters</label>
+                  <ul>
+                    {youtubeCopy.chapters.map((ch, i) => (
+                      <li key={i}>{ch.time} {ch.title}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {youtubeCopy.tags?.length > 0 && (
+                <div className="youtube-copy-field">
+                  <label>Tags</label>
+                  <p className="youtube-tags">{youtubeCopy.tags.join(", ")}</p>
+                </div>
+              )}
+              {youtubeCopy.pinnedComment && (
+                <div className="youtube-copy-field">
+                  <label>Pinned Comment</label>
+                  <p>{youtubeCopy.pinnedComment}</p>
+                </div>
+              )}
+              {youtubeCopy.pinnedCommentZh && (
+                <div className="youtube-copy-field">
+                  <label>Pinned Comment (中文)</label>
+                  <p>{youtubeCopy.pinnedCommentZh}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </section>
   );
@@ -1125,7 +1176,7 @@ function SettingsPage({ onSaved }) {
     xiaomiBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
     xiaomiTtsBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
     xiaomiTextModel: "MiMo-V2.5-Pro",
-    xiaomiTtsModel: "MiMo-V2.5-TTS",
+    xiaomiTtsModel: "mimo-v2.5-tts",
     xiaomiVoice: "mimo_default",
     xiaomiPodcastHostAVoice: "Mia",
     xiaomiPodcastHostBVoice: "Milo",
@@ -1172,7 +1223,7 @@ function SettingsPage({ onSaved }) {
       xiaomiBaseUrl: next.xiaomi?.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
       xiaomiTtsBaseUrl: next.xiaomi?.ttsBaseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
       xiaomiTextModel: next.xiaomi?.textModel || "MiMo-V2.5-Pro",
-      xiaomiTtsModel: next.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
+      xiaomiTtsModel: next.xiaomi?.ttsModel || "mimo-v2.5-tts",
       xiaomiVoice: next.xiaomi?.voice || "mimo_default",
       xiaomiPodcastHostAVoice: next.xiaomi?.podcastHostAVoice || "Mia",
       xiaomiPodcastHostBVoice: next.xiaomi?.podcastHostBVoice || "Milo",
@@ -1473,7 +1524,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   TTS Model
                   <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                    {(summary?.xiaomi?.ttsModels || ["mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
+                    {(summary?.xiaomi?.ttsModels || ["mimo-v2.5-tts", "mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2-TTS"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1661,7 +1712,7 @@ function SettingsPage({ onSaved }) {
                     <label>
                       Xiaomi TTS Model
                       <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                        {(summary?.xiaomi?.ttsModels || ["mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
+                        {(summary?.xiaomi?.ttsModels || ["mimo-v2.5-tts", "mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2-TTS"]).map((m) => (
                           <option key={m} value={m}>{m}</option>
                         ))}
                       </select>

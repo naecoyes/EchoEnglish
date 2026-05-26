@@ -34,15 +34,15 @@ const DEFAULT_XIAOMI = {
   baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
   ttsBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
   textModel: "MiMo-V2.5-Pro",
-  ttsModel: "MiMo-V2.5-TTS",
+  ttsModel: "mimo-v2.5-tts",
   voice: "mimo_default",
   podcastHostAVoice: "Mia",
   podcastHostBVoice: "Milo",
   ttsModels: [
+    "mimo-v2.5-tts",
     "mimo-v2-tts",
     "MiMo-V2.5-TTS-VoiceClone",
     "MiMo-V2.5-TTS-VoiceDesign",
-    "MiMo-V2.5-TTS",
     "MiMo-V2-TTS"
   ],
   textModels: [
@@ -150,7 +150,7 @@ async function getEffectiveSettings() {
       apiKey: raw.xiaomi?.apiKey || envXiaomiKey,
       ttsApiKey: raw.xiaomi?.ttsApiKey || local.xiaomi?.ttsApiKey || raw.xiaomi?.apiKey || envXiaomiKey,
       baseUrl: raw.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
-      ttsBaseUrl: raw.xiaomi?.ttsBaseUrl || local.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
+      ttsBaseUrl: normalizeXiaomiTtsBaseUrl(raw.xiaomi?.ttsBaseUrl || local.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl),
       textModel: normalizeXiaomiModel(raw.xiaomi?.textModel, DEFAULT_XIAOMI.textModel),
       ttsModel: normalizeXiaomiModel(raw.xiaomi?.ttsModel, DEFAULT_XIAOMI.ttsModel),
       voice: raw.xiaomi?.voice || local.xiaomi?.voice || DEFAULT_XIAOMI.voice,
@@ -207,7 +207,7 @@ async function getSettingsSummary() {
       maskedTtsApiKey: maskApiKey(settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey),
       keySource: settings.xiaomi?.keySource,
       baseUrl: settings.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
-      ttsBaseUrl: settings.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
+      ttsBaseUrl: normalizeXiaomiTtsBaseUrl(settings.xiaomi?.ttsBaseUrl),
       textModel: settings.xiaomi?.textModel || DEFAULT_XIAOMI.textModel,
       ttsModel: settings.xiaomi?.ttsModel || DEFAULT_XIAOMI.ttsModel,
       voice: settings.xiaomi?.voice || DEFAULT_XIAOMI.voice,
@@ -277,7 +277,10 @@ async function saveSettings(input = {}) {
       ...(input.xiaomi || {}),
       apiKey: typeof input.xiaomi?.apiKey === "string" && input.xiaomi.apiKey.trim()
         ? input.xiaomi.apiKey.trim()
-        : current.xiaomi?.apiKey
+        : current.xiaomi?.apiKey,
+      ttsApiKey: typeof input.xiaomi?.ttsApiKey === "string" && input.xiaomi.ttsApiKey.trim()
+        ? input.xiaomi.ttsApiKey.trim()
+        : current.xiaomi?.ttsApiKey || current.xiaomi?.apiKey
     },
     google: {
       ...current.google,
@@ -575,7 +578,7 @@ function normalizeSettings(settings = {}) {
       apiKey: typeof settings.xiaomi?.apiKey === "string" ? settings.xiaomi.apiKey.trim() : "",
       ttsApiKey: typeof settings.xiaomi?.ttsApiKey === "string" ? settings.xiaomi.ttsApiKey.trim() : "",
       baseUrl: cleanModel(settings.xiaomi?.baseUrl, DEFAULT_XIAOMI.baseUrl),
-      ttsBaseUrl: cleanModel(settings.xiaomi?.ttsBaseUrl, DEFAULT_XIAOMI.ttsBaseUrl),
+      ttsBaseUrl: normalizeXiaomiTtsBaseUrl(settings.xiaomi?.ttsBaseUrl),
       textModel: normalizeXiaomiModel(settings.xiaomi?.textModel, DEFAULT_XIAOMI.textModel),
       ttsModel: normalizeXiaomiModel(settings.xiaomi?.ttsModel, DEFAULT_XIAOMI.ttsModel),
       voice: cleanModel(settings.xiaomi?.voice, DEFAULT_XIAOMI.voice),
@@ -659,11 +662,16 @@ function normalizeTextModel(value, llmModel, fallback) {
 function normalizeXiaomiModel(value, fallback) {
   const text = typeof value === "string" ? value.trim() : "";
   const model = text || fallback || "";
+  const lower = model.toLowerCase();
   const canonical = new Map([
     ...DEFAULT_XIAOMI.textModels.map((name) => [name.toLowerCase(), name]),
     ...DEFAULT_XIAOMI.ttsModels.map((name) => [name.toLowerCase(), name])
   ]);
-  return canonical.get(model.toLowerCase()) || model;
+  return canonical.get(lower) || model;
+}
+
+function normalizeXiaomiTtsBaseUrl(value) {
+  return cleanModel(value, DEFAULT_XIAOMI.ttsBaseUrl);
 }
 
 function normalizeProvider(value, fallback, allowed) {
@@ -694,7 +702,7 @@ async function writeLocalSettings(settings) {
       apiKey: settings.xiaomi?.apiKey || "",
       ttsApiKey: settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey || "",
       baseUrl: settings.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
-      ttsBaseUrl: settings.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
+      ttsBaseUrl: normalizeXiaomiTtsBaseUrl(settings.xiaomi?.ttsBaseUrl),
       textModel: settings.xiaomi?.textModel || DEFAULT_XIAOMI.textModel,
       ttsModel: settings.xiaomi?.ttsModel || DEFAULT_XIAOMI.ttsModel,
       voice: settings.xiaomi?.voice || DEFAULT_XIAOMI.voice,

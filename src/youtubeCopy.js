@@ -36,12 +36,34 @@ function buildYouTubeCopy({ story, readingItems = [], qualityReport = null }) {
     hashtags.join(" ")
   ].filter((line) => line !== null && line !== undefined).join("\n");
 
+  const descriptionZh = [
+    `通过这个EchoEnglish故事练习听力、阅读和口语：${story.title || story.topic || "英语故事"}。`,
+    "",
+    `难度：约美国小学${estimateUsGradeLevelZh(story)}水平英语。`,
+    `视频类型：${story.template?.title || story.contentMode || "英语故事"}。`,
+    duration ? `时长：约${formatDuration(duration)}。` : "",
+    "",
+    "练习方法：",
+    "1. 先听每个句子。",
+    "2. 在静音间隙大声朗读。",
+    "3. 最后复习词汇。",
+    "",
+    chapters.length ? "章节：" : "",
+    ...chapters.map((chapter) => `${chapter.time} ${chapter.title}`),
+    "",
+    keywords.length ? `关键词：${keywords.join(", ")}` : "",
+    "",
+    hashtags.join(" ")
+  ].filter((line) => line !== null && line !== undefined).join("\n");
+
   return {
     title,
     description,
+    descriptionZh,
     chapters,
     tags: buildTags(story, keywords),
     pinnedComment: `Which sentence was hardest for you to shadow? Write it below and practice it three more times. ${hashtags[0]}`,
+    pinnedCommentZh: `哪个句子最难跟读？写在下面，再练习三遍。${hashtags[0]}`,
     thumbnailText: {
       main: story.title,
       subtitle: "Listen and Shadow",
@@ -54,8 +76,8 @@ function buildYouTubeCopy({ story, readingItems = [], qualityReport = null }) {
 function buildTitle(story) {
   const base = String(story.title || story.topic || "English Story").trim();
   const suffix = story.template?.id === "podcast-dialogue" ? "Podcast English Practice" : "English Shadowing Story";
-  const title = `${base} | ${suffix}`;
-  return title.length <= 95 ? title : `${base.slice(0, 72).trim()} | EchoEnglish`;
+  const full = `英语口语练习-${base} | ${suffix}`;
+  return full.length <= 95 ? full : `英语口语练习-${base.slice(0, 60).trim()} | EchoEnglish`;
 }
 
 function buildChapters(story, readingItems) {
@@ -113,14 +135,20 @@ function renderYouTubeCopyMarkdown(copy) {
     "## Title",
     copy.title,
     "",
-    "## Description",
+    "## Description (English)",
     copy.description,
+    "",
+    "## Description (中文)",
+    copy.descriptionZh,
     "",
     "## Tags",
     copy.tags.join(", "),
     "",
     "## Pinned Comment",
     copy.pinnedComment,
+    "",
+    "## Pinned Comment (中文)",
+    copy.pinnedCommentZh,
     "",
     "## Thumbnail Text",
     `- Main: ${copy.thumbnailText.main}`,
@@ -134,6 +162,12 @@ function estimateUsGradeLevel(story) {
   if (story?.contentMode === "factual-documentary") return "Grade 4 to 5";
   if (story?.level === "beginner") return "Grade 3 to 4";
   return "Grade 4 to 5";
+}
+
+function estimateUsGradeLevelZh(story) {
+  if (story?.contentMode === "factual-documentary") return "4至5年级";
+  if (story?.level === "beginner") return "3至4年级";
+  return "4至5年级";
 }
 
 function lastTimestamp(readingItems) {
