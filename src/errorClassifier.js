@@ -14,8 +14,11 @@ function classifyError(error) {
   if (/prompt length|less than 1500|too long/.test(lower)) {
     return { type: "bad_request", recoverable: true };
   }
-  if (/http 5\d\d|econnreset|etimedout|enotfound|network|fetch failed|abort|timed out|timeout/.test(lower)) {
+  if (/http 5\d\d|econnreset|etimedout|enotfound|network|fetch failed|abort|timed out|timeout|getaddrinfo/.test(lower)) {
     return { type: "network_error", recoverable: true };
+  }
+  if (/http 404|not found|openresty/.test(lower) && /xiaomi|mimo|tts|audio/.test(lower)) {
+    return { type: "bad_request", recoverable: true };
   }
   if (/bad request|invalid|http 400|http 404/.test(lower)) {
     return { type: "bad_request", recoverable: false };

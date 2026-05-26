@@ -158,7 +158,7 @@ function renderImagePrompts(story) {
   story.sections.forEach((section, index) => {
     const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
     const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
-    const beatCount = Number.isInteger(section.imageBeatCount) ? section.imageBeatCount : 1;
+    const beatCount = getSectionImageBeats(section).length;
     for (let beatIndex = 0; beatIndex < beatCount; beatIndex += 1) {
       const sceneId = buildPromptSceneImageId(baseIndex, variantIndex, beatIndex);
       lines.push(`## ${sceneId} - ${section.title}`, "");
@@ -176,13 +176,47 @@ function buildPromptSceneImageId(baseIndex, variantIndex, beatIndex) {
 
 function buildPromptBeatImagePrompt(story, section, beatIndex) {
   const sentences = section.sentences || [];
-  const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story.mode === "pure-story" ? 1 : 2;
-  const moment = sentences.slice(beatIndex * beatSize, beatIndex * beatSize + beatSize).join(" ");
+  const beat = getSectionImageBeats(section)[beatIndex];
+  const moment = beat
+    ? sentences.slice(beat.sentenceStart, beat.sentenceEnd + 1).join(" ")
+    : sentences.join(" ");
   return [
-    section.imagePrompt,
+    beat?.imagePrompt || section.imagePrompt,
     moment ? `Specific moment for this background: ${moment}` : "",
+    beat?.durationNote ? `Timing note: ${beat.durationNote}` : "",
     "Make this image visually distinct from the nearby sentence backgrounds."
   ].filter(Boolean).join(" ");
+}
+
+function getSectionImageBeats(section) {
+  const sentences = section.sentences || [];
+  const sentenceCount = Math.max(1, sentences.length);
+  if (Array.isArray(section.imageBeats) && section.imageBeats.length) {
+    return section.imageBeats
+      .map((beat) => {
+        const start = clampInteger(beat.sentenceStart, 0, sentenceCount - 1);
+        const end = clampInteger(beat.sentenceEnd, start, sentenceCount - 1);
+        return {
+          ...beat,
+          sentenceStart: start,
+          sentenceEnd: Math.max(start, end)
+        };
+      })
+      .sort((a, b) => a.sentenceStart - b.sentenceStart)
+      .slice(0, 2);
+  }
+  return [{
+    sentenceStart: 0,
+    sentenceEnd: sentenceCount - 1,
+    imagePrompt: section.imagePrompt || "",
+    durationNote: "cover the full scene"
+  }];
+}
+
+function clampInteger(value, min, max) {
+  const number = Number(value);
+  const integer = Number.isFinite(number) ? Math.trunc(number) : min;
+  return Math.min(max, Math.max(min, integer));
 }
 
 function renderSrt(items) {

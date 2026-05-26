@@ -80,8 +80,9 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
     "- Target exactly 15 minutes.",
     "- Use 28-30 internal scenes.",
     "- Each scene has exactly 4 English sentences.",
-    "- This creates 112-120 sentence-level background images.",
-    "- Keep beginner English, Chinese sentence translations, 3 vocabulary notes, and photorealistic image prompts.",
+    "- Use 30-45 total background image beats, about 2-3 images per minute.",
+    "- Each scene should normally have 1 imageBeat covering all 4 sentences. Use 2 imageBeats only when the story clearly changes location, action, or speaker focus inside that scene.",
+    "- Keep beginner English, Chinese sentence translations, 3 vocabulary notes, imageBeats, and photorealistic image prompts.",
     factualMode ? "- Factual documentary mode: do not invent fictional protagonists, employees, dialogue, or unsupported private scenes." : "",
     `Topic: ${topic}`,
     `User feedback:\n${cleanText(feedback) || "Improve clarity and accuracy."}`,
@@ -110,23 +111,28 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     template ? formatTemplateForPrompt(template) : "",
     "Important rules:",
     podcastMode
-      ? "- Podcast mode: write natural two-host dialogue. Each sentence should begin with Host A: or Host B: only when it helps clarity."
+      ? "- Podcast mode: write natural two-host dialogue. Every sentence must begin with Host A: or Host B: so the TTS can choose the right voice."
       : "- Pure story mode only. Do not include Part, Chapter, Listen, Shadow, Review, teaching instructions, or repeated rounds.",
     podcastMode
-      ? "- The English narration must alternate between two speakers, but each turn must stay short and beginner-friendly."
+      ? "- Use real conversational turns, not mechanical one-sentence alternation. A host may speak 1-3 short sentences in a row before the other host responds."
       : "- The English narration must be continuous story prose in short beginner-friendly sentences.",
     podcastMode
-      ? "- For podcast mode, every scene should still have exactly 4 sentences, normally alternating Host A, Host B, Host A, Host B."
+      ? "- For podcast mode, every scene still has exactly 4 sentences. Use varied turn patterns such as A,A,B,B or A,B,B,A when it sounds natural."
       : "",
     "- Use 28-30 internal scenes. Each scene has exactly 4 English sentences.",
     "- The story should naturally last about 15 minutes when read slowly with short pauses.",
-    "- The video needs 112-120 sentence-level background images, so every sentence must describe a visually useful moment.",
+    "- The video should use 30-45 total background image beats, about 2-3 images per minute. Do not create one image per sentence.",
+    "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all 4 sentences; use two only for major visual changes.",
+    "- Let the model decide image beat timing from the story flow by assigning sentenceStart and sentenceEnd for each imageBeat.",
     "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a photorealistic image prompt.",
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
     "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
     "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition that leaves the lower third clean for subtitles.",
     "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no UI.",
     "- Avoid repeated generic wording. Each scene prompt must have a distinct place, object, camera angle, or action.",
+    isPersonFocusedTopic(topic, template)
+      ? "- Person-focused mode: keep the same public subject visually consistent. Prefer one-person portraits, public-stage photos, offices, documents, symbolic objects, and context shots. Do not generate multiple unrelated faces or group portraits unless the facts require a public group scene."
+      : "",
     factualMode
       ? "- Factual documentary mode is required. Do not create fictional protagonists, invented employees, invented dialogue, private emotions, or scenes that are not supported by the outline/search context."
       : "- Fictional story mode is allowed only when the topic is not about real history, companies, people, or products.",
@@ -142,7 +148,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "summary": "string",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
-    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "80-120 word English photorealistic prompt", "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
+    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "80-120 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": 3, "durationNote": "covers the whole scene", "imagePrompt": "specific image prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
     "  ]",
     "}",
     `Topic: ${topic}`,
@@ -318,12 +324,14 @@ function normalizeSection(section, index, storyTitle) {
     ? section.vocabulary.map((pair) => [cleanText(pair?.[0]), cleanText(pair?.[1]), cleanText(pair?.[2])]).filter(([word, zh]) => word && zh).slice(0, 4)
     : [];
   const visual = cleanText(section?.visual) || `${storyTitle}, scene ${index + 1}, cinematic story moment`;
+  const imageBeats = normalizeImageBeats(section?.imageBeats, sentences, section?.imagePrompt, visual, storyTitle);
   return {
     title: cleanText(section?.title) || `Scene ${index + 1}`,
     baseSectionIndex: index,
     imageVariantIndex: 0,
-    imageBeatSize: 1,
-    imageBeatCount: Math.max(1, sentences.length),
+    imageBeatSize: Math.max(1, Math.ceil(sentences.length / imageBeats.length)),
+    imageBeatCount: imageBeats.length,
+    imageBeats,
     visual,
     imagePrompt: cleanText(section?.imagePrompt) || buildPhotoPrompt(storyTitle, visual, sentences),
     sentences,
@@ -331,6 +339,44 @@ function normalizeSection(section, index, storyTitle) {
     translations: translations.length === sentences.length ? translations : sentences.map(() => "中文释义待补充。"),
     vocabulary: vocabulary.length ? vocabulary : fallbackVocabulary(sentences.join(" "))
   };
+}
+
+function normalizeImageBeats(rawBeats, sentences, sectionPrompt, visual, storyTitle) {
+  const sentenceCount = Math.max(1, sentences.length);
+  const beats = Array.isArray(rawBeats)
+    ? rawBeats.map((beat) => {
+        const start = clampInteger(beat?.sentenceStart, 0, sentenceCount - 1);
+        const end = clampInteger(beat?.sentenceEnd, start, sentenceCount - 1);
+        return {
+          sentenceStart: start,
+          sentenceEnd: Math.max(start, end),
+          durationNote: cleanText(beat?.durationNote) || "",
+          imagePrompt: cleanText(beat?.imagePrompt)
+        };
+      }).filter((beat) => beat.imagePrompt || beat.sentenceEnd >= beat.sentenceStart)
+    : [];
+
+  const compact = beats
+    .sort((a, b) => a.sentenceStart - b.sentenceStart)
+    .slice(0, sentenceCount >= 4 ? 2 : 1)
+    .map((beat) => ({
+      ...beat,
+      imagePrompt: beat.imagePrompt || buildPhotoPrompt(storyTitle, visual, sentences.slice(beat.sentenceStart, beat.sentenceEnd + 1))
+    }));
+
+  if (compact.length) return compact;
+  return [{
+    sentenceStart: 0,
+    sentenceEnd: sentenceCount - 1,
+    durationNote: "cover the full scene",
+    imagePrompt: cleanText(sectionPrompt) || buildPhotoPrompt(storyTitle, visual, sentences)
+  }];
+}
+
+function clampInteger(value, min, max) {
+  const number = Number(value);
+  const integer = Number.isFinite(number) ? Math.trunc(number) : min;
+  return Math.min(max, Math.max(min, integer));
 }
 
 function parseSpeakerSentence(value) {
@@ -407,8 +453,14 @@ function fallbackScene(outline, beat, nextBeat, index) {
     title: `Scene ${index + 1}`,
     baseSectionIndex: index,
     imageVariantIndex: 0,
-    imageBeatSize: 1,
-    imageBeatCount: sentences.length,
+    imageBeatSize: sentences.length,
+    imageBeatCount: 1,
+    imageBeats: [{
+      sentenceStart: 0,
+      sentenceEnd: sentences.length - 1,
+      durationNote: "cover the full scene",
+      imagePrompt: buildPhotoPrompt(outline.title, visual, sentences)
+    }],
     visual,
     imagePrompt: buildPhotoPrompt(outline.title, visual, sentences),
     sentences,
@@ -436,8 +488,14 @@ function fallbackFactualScene(outline, beat, nextBeat, index) {
     title: `Scene ${index + 1}`,
     baseSectionIndex: index,
     imageVariantIndex: 0,
-    imageBeatSize: 1,
-    imageBeatCount: sentences.length,
+    imageBeatSize: sentences.length,
+    imageBeatCount: 1,
+    imageBeats: [{
+      sentenceStart: 0,
+      sentenceEnd: sentences.length - 1,
+      durationNote: "cover the full scene",
+      imagePrompt: buildPhotoPrompt(outline.title, visual, sentences)
+    }],
     visual,
     imagePrompt: buildPhotoPrompt(outline.title, visual, sentences),
     sentences,
@@ -483,6 +541,11 @@ function isFactualHistoryTopic(topic) {
 
 function isFactualTemplate(template) {
   return cleanText(template?.contentMode) === "factual-documentary";
+}
+
+function isPersonFocusedTopic(topic, template) {
+  return template?.id === "founder-biography"
+    || /\b(founder|biography|leader|ceo|profile|life of|elon musk|steve jobs|lei jun|bill gates|person)\b/i.test(String(topic || ""));
 }
 
 function cleanContentMode(value, topic, template = null) {

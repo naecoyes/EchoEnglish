@@ -291,7 +291,14 @@ function buildRepeatedSections(baseStory, repetitions) {
         ...section,
         baseSectionIndex,
         imageVariantIndex,
-        imageBeatCount: getImageBeatCount(section),
+        imageBeatSize: section.sentences?.length || 4,
+        imageBeatCount: 1,
+        imageBeats: [{
+          sentenceStart: 0,
+          sentenceEnd: Math.max(0, (section.sentences?.length || 1) - 1),
+          durationNote: "cover the full scene",
+          imagePrompt: buildImagePrompt(baseStory.title, section.visual || section.sentences.join(" "), imageVariantIndex, 0, section.sentences)
+        }],
         title: roundLabel ? `${section.title} - ${roundLabel}` : section.title,
         imagePrompt: buildImagePrompt(baseStory.title, section.visual || section.sentences.join(" "), imageVariantIndex, 0, section.sentences),
         mode: roundLabel || "Listen",
@@ -300,10 +307,6 @@ function buildRepeatedSections(baseStory, repetitions) {
     });
   }
   return targetSections;
-}
-
-function getImageBeatCount(section) {
-  return Math.max(1, Math.ceil((section.sentences?.length || 1) / 2));
 }
 
 function estimateStorySeconds(opening, sections, closing, defaults) {

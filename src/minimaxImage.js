@@ -15,11 +15,20 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
 
   const imagesDir = path.join(outputDir, "images");
   await ensureDir(imagesDir);
-  await initImageManifest(outputDir, scenes);
+  const manifest = await initImageManifest(outputDir, scenes);
 
   const results = [];
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
+    const manifestItem = manifest.items?.find((item) => item.sceneId === scene.id);
+    if (manifestItem?.promptChanged) {
+      await deleteSceneImage(imagesDir, scene.id);
+      await updateImageManifest(outputDir, scene.id, {
+        status: "pending",
+        imagePath: null,
+        error: "Prompt changed; cached image will be regenerated."
+      });
+    }
     const cachedPath = await findExistingImage(imagesDir, scene.id);
     if (cachedPath) {
       const quality = await validateCachedImage(cachedPath, imagesDir, scene.id);

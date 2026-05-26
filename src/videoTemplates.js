@@ -114,11 +114,11 @@ const VIDEO_TEMPLATES = [
     title: "Podcast Conversation",
     contentMode: "factual-documentary",
     summary: "A two-host educational podcast script that explains a topic through natural English conversation.",
-    structureRules: "Use two speakers who alternate short turns. Start with a hook, explain background, ask simple questions, clarify key facts, and end with a short learner recap.",
+    structureRules: "Use two speakers in natural dialogue turns. A host may say 1-3 short sentences before the other host asks, reacts, or adds a point. Start with a hook, explain background, clarify key facts, and end with a short learner recap.",
     visualStyle: "photorealistic podcast studio, two hosts at microphones, warm desk lights, topic-related background screens, natural cinematic close-ups",
     vocabularyFocus: ["explain", "question", "background", "detail", "evidence", "example", "meaning", "summary"],
     searchHint: "topic facts timeline official sources explainer interview podcast background",
-    draftGuidance: "Write in a podcast-like two-host voice, but keep each sentence simple and factual. Prefix sentences with Host A or Host B only when it reads naturally; do not invent unsupported claims."
+    draftGuidance: "Write in a podcast-like two-host voice with real conversational flow. Avoid mechanical one-sentence alternation. Prefix every sentence with Host A or Host B so the TTS can choose the correct voice; do not invent unsupported claims."
   }
 ];
 

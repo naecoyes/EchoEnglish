@@ -51,7 +51,9 @@ const OUTPUT_LABELS = {
   audioManifest: "Audio Manifest",
   imageManifest: "Image Manifest",
   musicManifest: "Music Manifest",
-  qualityReport: "Quality Report"
+  qualityReport: "Quality Report",
+  youtubeCopy: "YouTube Copy",
+  youtubeCopyJson: "YouTube Copy JSON"
 };
 
 const DEFAULT_TEMPLATE_ID = "company-origin";
@@ -458,6 +460,7 @@ function getActiveConfigBadges(config) {
       `TTS: ${formatTtsConfig(config, settings)}`,
       `Image: ${formatImageConfig(config, settings)}`,
       `Music: ${settings.models?.music || "music-2.6"}`,
+      `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}`,
       "Search: Tavily"
     ];
   }
@@ -467,6 +470,7 @@ function getActiveConfigBadges(config) {
     `TTS: ${formatTtsConfig(config, settings)}`,
     `Image: ${formatImageConfig(config, settings)}`,
     `Music: ${settings.models?.music || "music-2.6"}`,
+    `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}`,
     "Search: Tavily"
   ];
 }
@@ -476,6 +480,17 @@ function formatTtsConfig(config, settings) {
   if (provider === "google") return `Google ${config?.google?.ttsModel || settings.google?.ttsModel || "gemini-2.5-flash-preview-tts"}`;
   if (provider === "xiaomi") return `Xiaomi ${config?.xiaomi?.ttsModel || settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS"}`;
   return settings.models?.tts || "speech-2.8-hd";
+}
+
+function formatVideoEncoder(value) {
+  const labels = {
+    auto: "Auto",
+    "apple-videotoolbox": "Apple VideoToolbox",
+    "nvidia-nvenc": "NVIDIA NVENC",
+    "intel-qsv": "Intel Quick Sync",
+    "cpu-libx264": "CPU libx264"
+  };
+  return labels[value] || labels.auto;
 }
 
 function formatImageConfig(config, settings) {
@@ -646,7 +661,7 @@ function DraftReview({ draft, outline, feedback, setFeedback, meta, onRevise }) 
       <h2>{draft.title}</h2>
       <p>{draft.summary}</p>
       <div className="chip-row">
-        {[draft.template?.title || outline?.template?.title, draft.contentMode || outline?.contentMode, `${scenes.length} scenes`, `${sentenceCount} sentences`, `${meta?.imageTarget || sentenceCount} images`, `${meta?.musicTarget || 3} music tracks`, meta?.autosaved ? "autosaved" : ""].filter(Boolean).map((item) => (
+        {[draft.template?.title || outline?.template?.title, draft.contentMode || outline?.contentMode, `${scenes.length} scenes`, `${sentenceCount} sentences`, `${meta?.imageTarget || estimateImageBeats(draft)} images`, `${meta?.musicTarget || 3} music tracks`, meta?.autosaved ? "autosaved" : ""].filter(Boolean).map((item) => (
           <span key={item}>{item}</span>
         ))}
       </div>
@@ -678,6 +693,14 @@ function DraftReview({ draft, outline, feedback, setFeedback, meta, onRevise }) 
       </button>
     </div>
   );
+}
+
+function estimateImageBeats(draft) {
+  return (draft.sections || []).reduce((total, section) => {
+    if (Array.isArray(section.imageBeats) && section.imageBeats.length) return total + Math.min(2, section.imageBeats.length);
+    if (Number.isInteger(section.imageBeatCount)) return total + Math.max(1, section.imageBeatCount);
+    return total + 1;
+  }, 0);
 }
 
 function OutlineCard({ outline }) {
@@ -1094,12 +1117,18 @@ function SettingsPage({ onSaved }) {
     },
     media: {
       ttsProvider: "minimax",
-      imageProvider: "minimax"
+      imageProvider: "minimax",
+      videoEncoder: "auto"
     },
     xiaomiApiKey: "",
+    xiaomiTtsApiKey: "",
     xiaomiBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+    xiaomiTtsBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
     xiaomiTextModel: "MiMo-V2.5-Pro",
     xiaomiTtsModel: "MiMo-V2.5-TTS",
+    xiaomiVoice: "mimo_default",
+    xiaomiPodcastHostAVoice: "Mia",
+    xiaomiPodcastHostBVoice: "Milo",
     googleApiKey: "",
     googleBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
     googleImageModel: "imagen-4.0-generate-001",
@@ -1137,11 +1166,16 @@ function SettingsPage({ onSaved }) {
       },
       media: {
         ttsProvider: next.media?.ttsProvider || "minimax",
-        imageProvider: next.media?.imageProvider || "minimax"
+        imageProvider: next.media?.imageProvider || "minimax",
+        videoEncoder: next.media?.videoEncoder || "auto"
       },
       xiaomiBaseUrl: next.xiaomi?.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
+      xiaomiTtsBaseUrl: next.xiaomi?.ttsBaseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
       xiaomiTextModel: next.xiaomi?.textModel || "MiMo-V2.5-Pro",
       xiaomiTtsModel: next.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
+      xiaomiVoice: next.xiaomi?.voice || "mimo_default",
+      xiaomiPodcastHostAVoice: next.xiaomi?.podcastHostAVoice || "Mia",
+      xiaomiPodcastHostBVoice: next.xiaomi?.podcastHostBVoice || "Milo",
       googleBaseUrl: next.google?.baseUrl || "https://generativelanguage.googleapis.com/v1beta",
       googleImageModel: next.google?.imageModel || "imagen-4.0-generate-001",
       googleTtsModel: next.google?.ttsModel || "gemini-2.5-flash-preview-tts",
@@ -1216,9 +1250,14 @@ function SettingsPage({ onSaved }) {
           },
           xiaomi: {
             apiKey: form.xiaomiApiKey,
+            ttsApiKey: form.xiaomiTtsApiKey,
             baseUrl: form.xiaomiBaseUrl,
+            ttsBaseUrl: form.xiaomiTtsBaseUrl,
             textModel: form.xiaomiTextModel,
-            ttsModel: form.xiaomiTtsModel
+            ttsModel: form.xiaomiTtsModel,
+            voice: form.xiaomiVoice,
+            podcastHostAVoice: form.xiaomiPodcastHostAVoice,
+            podcastHostBVoice: form.xiaomiPodcastHostBVoice
           },
           google: {
             apiKey: form.googleApiKey,
@@ -1236,7 +1275,7 @@ function SettingsPage({ onSaved }) {
         })
       });
       setSummary(next);
-      setForm((current) => ({ ...current, minimaxApiKey: "", llmApiKey: "", tavilyApiKey: "", xiaomiApiKey: "", googleApiKey: "" }));
+      setForm((current) => ({ ...current, minimaxApiKey: "", llmApiKey: "", tavilyApiKey: "", xiaomiApiKey: "", xiaomiTtsApiKey: "", googleApiKey: "" }));
       setMessage("Settings saved. Story planning now searches with Tavily before the LLM writes the overview and script.");
       await onSaved?.();
     } catch (error) {
@@ -1321,12 +1360,17 @@ function SettingsPage({ onSaved }) {
     { id: "text", label: "Text", helper: "LLM and script", ready: summary?.llm?.hasApiKey },
     { id: "tts", label: "TTS", helper: "Voice engines", ready: getProviderReady(summary, form.media.ttsProvider) },
     { id: "image", label: "Image", helper: "Scene backgrounds", ready: getProviderReady(summary, form.media.imageProvider) },
+    { id: "video", label: "Video", helper: "MP4 encoder", ready: true },
     { id: "music", label: "Music", helper: "Background music", ready: summary?.hasApiKey },
     { id: "search", label: "Search", helper: "Tavily facts", ready: summary?.search?.hasTavilyKey }
   ];
-  const showMiniMax = settingsType === "tts" || settingsType === "image" || settingsType === "music";
-  const showXiaomi = settingsType === "text" || settingsType === "tts";
-  const showGoogle = settingsType === "tts" || settingsType === "image";
+  const showMiniMax = settingsType === "music"
+    || (settingsType === "tts" && form.media.ttsProvider === "minimax")
+    || (settingsType === "image" && form.media.imageProvider === "minimax");
+  const showXiaomi = (settingsType === "text" && form.provider === "xiaomi")
+    || (settingsType === "tts" && form.media.ttsProvider === "xiaomi");
+  const showGoogle = (settingsType === "tts" && form.media.ttsProvider === "google")
+    || (settingsType === "image" && form.media.imageProvider === "google");
   const showPlanning = settingsType === "text" || settingsType === "search";
 
   return (
@@ -1390,15 +1434,31 @@ function SettingsPage({ onSaved }) {
               <input
                 value={form.xiaomiApiKey}
                 onChange={(event) => setForm({ ...form, xiaomiApiKey: event.target.value })}
-                placeholder={summary?.xiaomi?.hasApiKey ? "Leave blank to keep saved Xiaomi key" : "Paste Xiaomi API key"}
+                placeholder={summary?.xiaomi?.hasApiKey ? "Leave blank to keep saved Xiaomi text key" : "Paste Xiaomi text API key"}
                 type="password"
               />
+              {settingsType === "tts" && (
+                <input
+                  value={form.xiaomiTtsApiKey}
+                  onChange={(event) => setForm({ ...form, xiaomiTtsApiKey: event.target.value })}
+                  placeholder={summary?.xiaomi?.hasTtsApiKey ? "Leave blank to keep saved Xiaomi TTS key" : "Paste Xiaomi TTS API key"}
+                  type="password"
+                />
+              )}
               <div className="compact-grid">
                 <label>
-                  API Base
+                  Text API Base
                   <input
                     value={form.xiaomiBaseUrl}
                     onChange={(event) => setForm({ ...form, xiaomiBaseUrl: event.target.value })}
+                    placeholder="https://token-plan-sgp.xiaomimimo.com/v1"
+                  />
+                </label>
+                <label>
+                  TTS API Base
+                  <input
+                    value={form.xiaomiTtsBaseUrl}
+                    onChange={(event) => setForm({ ...form, xiaomiTtsBaseUrl: event.target.value })}
                     placeholder="https://token-plan-sgp.xiaomimimo.com/v1"
                   />
                 </label>
@@ -1413,7 +1473,7 @@ function SettingsPage({ onSaved }) {
                 <label>
                   TTS Model
                   <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                    {(summary?.xiaomi?.ttsModels || ["MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
+                    {(summary?.xiaomi?.ttsModels || ["mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
@@ -1527,23 +1587,16 @@ function SettingsPage({ onSaved }) {
 
         <aside className="glass-card content-panel settings-panel settings-sidebar">
           <div>
-            <p className="section-kicker">Profiles</p>
+            <p className="section-kicker">Defaults</p>
             <h2>Generation defaults</h2>
           </div>
-          <label>
-            Model Profile
-            <select value={form.activeProfile} onChange={(event) => applyProfile(event.target.value)}>
-              {Object.entries(summary?.profiles || {}).map(([id, profile]) => (
-                <option key={id} value={id}>{profile.label}</option>
-              ))}
-            </select>
-          </label>
           <div className="settings-note">
             <strong>{modelTypeTabs.find((item) => item.id === settingsType)?.label} defaults</strong>
             <span>
               {settingsType === "text" && `Script engine: ${form.provider === "xiaomi" ? "Xiaomi MiMo" : "Fallback LLM"}.`}
               {settingsType === "tts" && `Voice engine: ${form.media.ttsProvider}.`}
               {settingsType === "image" && `Scene image engine: ${form.media.imageProvider}.`}
+              {settingsType === "video" && `MP4 encoder: ${formatVideoEncoder(form.media.videoEncoder)}.`}
               {settingsType === "music" && "Background music currently uses MiniMax."}
               {settingsType === "search" && "Search grounding currently uses Tavily."}
             </span>
@@ -1583,58 +1636,82 @@ function SettingsPage({ onSaved }) {
                     <option value="google">Google Gemini TTS</option>
                   </select>
                 </label>
-                <label>
-                  MiniMax TTS Model
-                  <input value={form.models.tts} onChange={(event) => updateModel("tts", event.target.value)} />
-                </label>
-                <label>
-                  Xiaomi TTS Model
-                  <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
-                    {(summary?.xiaomi?.ttsModels || ["MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Google TTS Model
-                  <input value={form.googleTtsModel} onChange={(event) => setForm({ ...form, googleTtsModel: event.target.value })} />
-                </label>
-                <label>
-                  English Voice
-                  <input value={form.minimax.englishVoice} onChange={(event) => updateMiniMax("englishVoice", event.target.value)} />
-                </label>
-                <label>
-                  Podcast Host A Voice
-                  <input value={form.minimax.podcastHostAVoice} onChange={(event) => updateMiniMax("podcastHostAVoice", event.target.value)} />
-                </label>
-                <label>
-                  Podcast Host B Voice
-                  <input value={form.minimax.podcastHostBVoice} onChange={(event) => updateMiniMax("podcastHostBVoice", event.target.value)} />
-                </label>
-                <label>
-                  Google Voice
-                  <select value={form.googleVoice} onChange={(event) => setForm({ ...form, googleVoice: event.target.value })}>
-                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
-                      <option key={voice} value={voice}>{voice}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Google Podcast Host A
-                  <select value={form.googlePodcastHostAVoice} onChange={(event) => setForm({ ...form, googlePodcastHostAVoice: event.target.value })}>
-                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
-                      <option key={voice} value={voice}>{voice}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Google Podcast Host B
-                  <select value={form.googlePodcastHostBVoice} onChange={(event) => setForm({ ...form, googlePodcastHostBVoice: event.target.value })}>
-                    {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
-                      <option key={voice} value={voice}>{voice}</option>
-                    ))}
-                  </select>
-                </label>
+                {form.media.ttsProvider === "minimax" && (
+                  <>
+                    <label>
+                      MiniMax TTS Model
+                      <input value={form.models.tts} onChange={(event) => updateModel("tts", event.target.value)} />
+                    </label>
+                    <label>
+                      English Voice
+                      <input value={form.minimax.englishVoice} onChange={(event) => updateMiniMax("englishVoice", event.target.value)} />
+                    </label>
+                    <label>
+                      MiniMax Podcast Host A
+                      <input value={form.minimax.podcastHostAVoice} onChange={(event) => updateMiniMax("podcastHostAVoice", event.target.value)} />
+                    </label>
+                    <label>
+                      MiniMax Podcast Host B
+                      <input value={form.minimax.podcastHostBVoice} onChange={(event) => updateMiniMax("podcastHostBVoice", event.target.value)} />
+                    </label>
+                  </>
+                )}
+                {form.media.ttsProvider === "xiaomi" && (
+                  <>
+                    <label>
+                      Xiaomi TTS Model
+                      <select value={form.xiaomiTtsModel} onChange={(event) => setForm({ ...form, xiaomiTtsModel: event.target.value })}>
+                        {(summary?.xiaomi?.ttsModels || ["mimo-v2-tts", "MiMo-V2.5-TTS-VoiceClone", "MiMo-V2.5-TTS-VoiceDesign", "MiMo-V2.5-TTS", "MiMo-V2-TTS"]).map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Xiaomi Default Voice
+                      <input value={form.xiaomiVoice} onChange={(event) => setForm({ ...form, xiaomiVoice: event.target.value })} />
+                    </label>
+                    <label>
+                      Podcast Host A Voice
+                      <input value={form.xiaomiPodcastHostAVoice} onChange={(event) => setForm({ ...form, xiaomiPodcastHostAVoice: event.target.value })} />
+                    </label>
+                    <label>
+                      Podcast Host B Voice
+                      <input value={form.xiaomiPodcastHostBVoice} onChange={(event) => setForm({ ...form, xiaomiPodcastHostBVoice: event.target.value })} />
+                    </label>
+                  </>
+                )}
+                {form.media.ttsProvider === "google" && (
+                  <>
+                    <label>
+                      Google TTS Model
+                      <input value={form.googleTtsModel} onChange={(event) => setForm({ ...form, googleTtsModel: event.target.value })} />
+                    </label>
+                    <label>
+                      Google Voice
+                      <select value={form.googleVoice} onChange={(event) => setForm({ ...form, googleVoice: event.target.value })}>
+                        {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                          <option key={voice} value={voice}>{voice}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Google Podcast Host A
+                      <select value={form.googlePodcastHostAVoice} onChange={(event) => setForm({ ...form, googlePodcastHostAVoice: event.target.value })}>
+                        {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                          <option key={voice} value={voice}>{voice}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Google Podcast Host B
+                      <select value={form.googlePodcastHostBVoice} onChange={(event) => setForm({ ...form, googlePodcastHostBVoice: event.target.value })}>
+                        {(summary?.google?.voices || ["Kore", "Puck", "Zephyr", "Aoede"]).map((voice) => (
+                          <option key={voice} value={voice}>{voice}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
               </>
             )}
 
@@ -1647,14 +1724,18 @@ function SettingsPage({ onSaved }) {
                     <option value="google">Google Imagen</option>
                   </select>
                 </label>
-                <label>
-                  MiniMax Image Model
-                  <input value={form.models.image} onChange={(event) => updateModel("image", event.target.value)} />
-                </label>
-                <label>
-                  Google Imagen Model
-                  <input value={form.googleImageModel} onChange={(event) => setForm({ ...form, googleImageModel: event.target.value })} />
-                </label>
+                {form.media.imageProvider === "minimax" && (
+                  <label>
+                    MiniMax Image Model
+                    <input value={form.models.image} onChange={(event) => updateModel("image", event.target.value)} />
+                  </label>
+                )}
+                {form.media.imageProvider === "google" && (
+                  <label>
+                    Google Imagen Model
+                    <input value={form.googleImageModel} onChange={(event) => setForm({ ...form, googleImageModel: event.target.value })} />
+                  </label>
+                )}
               </>
             )}
 
@@ -1674,6 +1755,25 @@ function SettingsPage({ onSaved }) {
                     <option value="3">3 tracks</option>
                     <option value="4">4 tracks</option>
                   </select>
+                </label>
+              </>
+            )}
+
+            {settingsType === "video" && (
+              <>
+                <label>
+                  Video Encoder
+                  <select value={form.media.videoEncoder} onChange={(event) => setForm({ ...form, media: { ...form.media, videoEncoder: event.target.value } })}>
+                    <option value="auto">Auto detect hardware encoder</option>
+                    <option value="apple-videotoolbox">Apple VideoToolbox</option>
+                    <option value="nvidia-nvenc">NVIDIA NVENC</option>
+                    <option value="intel-qsv">Intel Quick Sync</option>
+                    <option value="cpu-libx264">CPU libx264</option>
+                  </select>
+                </label>
+                <label>
+                  Encoder Notes
+                  <input value="Hardware encoding accelerates Compose MP4 only. API image/TTS/music calls are unchanged." readOnly />
                 </label>
               </>
             )}
@@ -1791,7 +1891,7 @@ function getPipelineSteps({ logs = [], status = "idle", hasDraft = false, mode =
   return [
     makeStep("prepare", "Prepare", "Load confirmed draft and output folder.", stepState({ failed, active: text.includes("preparing") || status === "queued", complete: text.includes("generating audio") || text.includes("audio ") })),
     makeStep("narration", "Narration", "Generate sentence-level TTS and timings.", stepState({ failed, active: text.includes("generating audio") || /audio \d+\/\d+/.test(text), complete: text.includes("tts api requests") || text.includes("merging") })),
-    makeStep("images", "Scene Images", "Generate one background per sentence.", stepState({ failed, active: text.includes("generating scene images") || text.includes("image api requests") || text.includes("rendering frame"), complete: text.includes("generating background music") || text.includes("background music") || text.includes("composing final mp4") })),
+    makeStep("images", "Scene Images", "Generate story beat backgrounds.", stepState({ failed, active: text.includes("generating scene images") || text.includes("image api requests") || text.includes("rendering frame"), complete: text.includes("generating background music") || text.includes("background music") || text.includes("composing final mp4") })),
     makeStep("music", "Music", "Create and merge 3-4 background tracks.", stepState({ failed, active: text.includes("background music"), complete: text.includes("background music ready") || text.includes("composing final mp4") })),
     makeStep("compose", "Compose MP4", "Mix audio, captions, images, and music.", stepState({ failed, active: text.includes("composing final mp4") || text.includes("encoding final mp4"), complete: text.includes("quality report") || status === "completed" })),
     makeStep("quality", "Quality Report", "Check duration, image count, music, and warnings.", stepState({ failed, active: text.includes("quality report"), complete: status === "completed" }))

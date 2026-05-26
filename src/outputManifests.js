@@ -73,16 +73,19 @@ async function initImageManifest(outputDir, scenes) {
   const items = [];
   for (const [index, scene] of scenes.entries()) {
     const prior = previous.get(scene.id) || {};
-    const imagePath = prior.imagePath || await findExistingImage(path.join(outputDir, "images"), scene.id);
+    const prompt = scene.imagePrompt || scene.visual || "";
+    const promptChanged = Boolean(prior.prompt && prior.prompt !== prompt);
+    const imagePath = promptChanged ? null : prior.imagePath || await findExistingImage(path.join(outputDir, "images"), scene.id);
     items.push({
       sceneId: scene.id,
       index,
-      prompt: scene.imagePrompt || scene.visual || "",
+      prompt,
+      promptChanged,
       status: imagePath ? "completed" : prior.status || "pending",
       imagePath: imagePath || null,
       quality: prior.quality || null,
       attempts: Number(prior.attempts || 0),
-      error: imagePath ? null : prior.error || null
+      error: imagePath ? null : promptChanged ? "Prompt changed; cached image will be regenerated." : prior.error || null
     });
   }
   const manifest = {

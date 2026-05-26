@@ -8,11 +8,13 @@ const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
-const { generateStoryWorkflow } = require("./storyWorkflow");
+const { generateStoryWorkflow, getUniqueImageScenes } = require("./storyWorkflow");
 const { composeStoryVideo } = require("./storyVideoComposer");
+const { generateImages: generateMiniMaxImages } = require("./minimaxImage");
+const { generateImages: generateGoogleImages } = require("./googleImage");
 const { createPureStory, createStoryOutline, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
 const { renderMarkdown } = require("./renderers");
-const { MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
+const { MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
 const {
   clearSavedApiKey,
   clearSavedGoogleApiKey,
@@ -290,6 +292,11 @@ const server = http.createServer(async (req, res) => {
       return await rerenderOutputUi(res, slug);
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/regenerate-images")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await regenerateOutputImages(res, slug);
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/continue")) {
       const id = url.pathname.split("/").at(-2);
       return await continueStoryJob(res, id);
@@ -409,7 +416,16 @@ async function continueStoryJob(res, id) {
 function runStoryJob(job) {
   attachPersistentLogs(job);
   job.stages = createStages(job.stages);
-  setImmediate(async () => {
+  setImmediate(() => {
+    runStoryJobAsync(job).catch((error) => {
+      handleStoryJobError(job, error).catch((persistError) => {
+        console.error("Failed to persist job error", persistError);
+      });
+    });
+  });
+}
+
+async function runStoryJobAsync(job) {
     job.status = "running";
     job.startedAt = job.startedAt || new Date().toISOString();
     job.updatedAt = new Date().toISOString();
@@ -458,6 +474,7 @@ function runStoryJob(job) {
         musicModel: settings.models.music || MINIMAX_MUSIC_MODEL,
         musicCount: settings.minimax.musicTrackCount || 3,
         musicVolume: 0.12,
+        videoEncoder: settings.media?.videoEncoder || "auto",
         storyMode: "pure-story",
         template,
         storyOutline,
@@ -484,25 +501,38 @@ function runStoryJob(job) {
       job.updatedAt = new Date().toISOString();
       await persistJob(job);
     } catch (error) {
-      const classification = classifyError(error);
-      job.status = classification.recoverable ? "failed_recoverable" : "failed";
-      job.error = error.message;
-      job.errorType = classification.type;
-      job.recoverable = classification.recoverable;
-      job.failedStage = firstFailedStage(job.stages);
-      job.updatedAt = new Date().toISOString();
-      job.logs.push(`[${new Date().toISOString()}] Error: ${error.message}`);
-      await persistJob(job);
+      await handleStoryJobError(job, error);
     }
-  });
+}
+
+async function handleStoryJobError(job, error) {
+  const classification = classifyError(error);
+  job.status = classification.recoverable ? "failed_recoverable" : "failed";
+  job.error = error.message;
+  job.errorType = classification.type;
+  job.recoverable = classification.recoverable;
+  job.failedStage = firstFailedStage(job.stages) || inferFailedStageFromLogs(job.logs, error.message) || "draft";
+  if (job.failedStage && job.stages?.[job.failedStage]?.status !== "failed") {
+    markStage(job.stages, job.failedStage, "failed", {
+      error: error.message,
+      errorType: classification.type,
+      recoverable: classification.recoverable
+    });
+  }
+  job.updatedAt = new Date().toISOString();
+  job.logs.push(`[${new Date().toISOString()}] Error: ${error.message}`);
+  await persistJob(job);
 }
 
 function validateGenerationSettings(settings) {
   if (!settings.minimaxApiKey) {
     return "MiniMax API key is required for background music. Open Settings and save your MiniMax API key before generating videos.";
   }
-  if ((settings.provider === "xiaomi" || settings.media?.ttsProvider === "xiaomi") && !settings.xiaomi?.apiKey) {
-    return "Xiaomi MiMo API key is required when Xiaomi provider is active. Open Settings and save your Xiaomi key.";
+  if (settings.provider === "xiaomi" && !settings.xiaomi?.apiKey) {
+    return "Xiaomi MiMo text API key is required when Xiaomi text provider is active. Open Settings and save your Xiaomi text key.";
+  }
+  if (settings.media?.ttsProvider === "xiaomi" && !(settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey)) {
+    return "Xiaomi TTS API key is required when Xiaomi TTS is active. Open Settings and save your Xiaomi TTS key.";
   }
   if ((settings.media?.ttsProvider === "google" || settings.media?.imageProvider === "google") && !settings.google?.apiKey) {
     return "Google API key is required when Google TTS or Imagen is selected. Open Settings and save your Google key.";
@@ -935,7 +965,9 @@ async function outputPathsForSlug(slug) {
     audioManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "audio-manifest.json")) ? `${base}audio-manifest.json` : null,
     imageManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "image-manifest.json")) ? `${base}image-manifest.json` : null,
     musicManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "music-manifest.json")) ? `${base}music-manifest.json` : null,
-    qualityReport: await fileExists(path.join(OUTPUT_ROOT, slug, "quality-report.json")) ? `${base}quality-report.json` : null
+    qualityReport: await fileExists(path.join(OUTPUT_ROOT, slug, "quality-report.json")) ? `${base}quality-report.json` : null,
+    youtubeCopy: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.md")) ? `${base}youtube-copy.md` : null,
+    youtubeCopyJson: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.json")) ? `${base}youtube-copy.json` : null
   };
 }
 
@@ -970,6 +1002,7 @@ async function rerenderOutputUi(res, slugInput) {
     outputDir,
     audioPath,
     musicPath: await fileExists(musicPath) ? musicPath : null,
+    videoEncoder: (await getEffectiveSettings()).media?.videoEncoder || "auto",
     logs
   });
   const outputs = await outputPathsForSlug(slug);
@@ -983,6 +1016,129 @@ async function rerenderOutputUi(res, slugInput) {
     frameCount: result.scenes.length,
     logs
   });
+}
+
+async function regenerateOutputImages(res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const story = await readOptionalJson(scriptPath);
+  if (!story) {
+    return sendJson(res, { error: "script.json is required for image regeneration." }, 404);
+  }
+  const scenes = getUniqueImageScenes(story);
+  if (!scenes.length) {
+    return sendJson(res, { error: "No image scenes found in script.json." }, 400);
+  }
+
+  const settings = await getEffectiveSettings();
+  const imageProvider = settings.media?.imageProvider === "google" ? "google" : "minimax";
+  const logs = [];
+  const imagesDir = path.join(outputDir, "images");
+  await ensureDir(imagesDir);
+  const backupDir = path.join(outputDir, ".image-regenerate-backup");
+  await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  await ensureDir(backupDir);
+  for (const scene of scenes) {
+    for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+      const current = path.join(imagesDir, `${scene.id}${ext}`);
+      if (!await fileExists(current)) continue;
+      await fs.copyFile(current, path.join(backupDir, `${scene.id}${ext}`));
+      await fs.unlink(current).catch(() => {});
+    }
+  }
+
+  logs.push(`[${new Date().toISOString()}] Regenerating ${scenes.length} story beat images with ${imageProvider}.`);
+  let results = [];
+  try {
+    results = imageProvider === "google"
+      ? await generateGoogleImages({
+        scenes,
+        outputDir,
+        apiKey: settings.google?.apiKey,
+        baseUrl: settings.google?.baseUrl,
+        model: settings.google?.imageModel,
+        onProgress: (progress) => logs.push(`[${new Date().toISOString()}] Image ${progress.completed}/${progress.total}: ${progress.sceneId} ${progress.status}`)
+      })
+      : await generateMiniMaxImages({
+        scenes,
+        outputDir,
+        apiKey: settings.minimaxApiKey,
+        model: settings.models?.image || MINIMAX_IMAGE_MODEL,
+        aspectRatio: "16:9",
+        promptOptimizer: true,
+        onProgress: (progress) => logs.push(`[${new Date().toISOString()}] Image ${progress.completed}/${progress.total}: ${progress.sceneId} ${progress.status}`)
+      });
+  } catch (error) {
+    await restoreImageBackup(imagesDir, backupDir);
+    return sendJson(res, {
+      ok: false,
+      slug,
+      recoverable: true,
+      error: error.message,
+      logs: [
+        ...logs,
+        `[${new Date().toISOString()}] Image regeneration failed; restored previous images from backup.`
+      ]
+    }, 429);
+  }
+  await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+
+  const rerender = await rerenderOutputUiPayload(slug, logs);
+  return sendJson(res, {
+    ok: true,
+    slug,
+    imageProvider,
+    imageCount: results.length,
+    ...rerender
+  });
+}
+
+async function restoreImageBackup(imagesDir, backupDir) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(backupDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  await ensureDir(imagesDir);
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    await fs.copyFile(path.join(backupDir, entry.name), path.join(imagesDir, entry.name)).catch(() => {});
+  }
+  await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+}
+
+async function rerenderOutputUiPayload(slug, logs = []) {
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const audioPath = path.join(outputDir, "audio.wav");
+  const musicPath = path.join(outputDir, "music", "background.mp3");
+  const story = await readOptionalJson(scriptPath);
+  if (!story) throw new Error("script.json is required for UI-only re-render.");
+  if (!await fileExists(audioPath)) throw new Error("audio.wav is required for UI-only re-render.");
+  const readingItems = Array.isArray(story.readingOrder) ? story.readingOrder : [];
+  if (!readingItems.length) throw new Error("script.json has no readingOrder to render.");
+  const result = await composeStoryVideo({
+    story,
+    readingItems,
+    outputDir,
+    audioPath,
+    musicPath: await fileExists(musicPath) ? musicPath : null,
+    videoEncoder: (await getEffectiveSettings()).media?.videoEncoder || "auto",
+    logs
+  });
+  const outputs = await outputPathsForSlug(slug);
+  return {
+    video: outputs.video,
+    outputs,
+    frameCount: result.scenes.length,
+    logs
+  };
 }
 
 async function getMediaInfo(outputPath) {
@@ -2570,7 +2726,13 @@ function normalizeStoryDraftInput(draft) {
 }
 
 function countDraftImages(draft) {
-  return (draft?.sections || []).reduce((total, section) => total + Math.max(1, Number(section.imageBeatCount || section.sentences?.length || 1)), 0);
+  return (draft?.sections || []).reduce((total, section) => {
+    if (Array.isArray(section.imageBeats) && section.imageBeats.length) {
+      return total + Math.min(2, section.imageBeats.length);
+    }
+    if (Number.isInteger(section.imageBeatCount)) return total + Math.max(1, section.imageBeatCount);
+    return total + 1;
+  }, 0);
 }
 
 function normalizeSearchContextInput(searchContext) {

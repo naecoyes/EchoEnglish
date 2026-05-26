@@ -6,12 +6,14 @@ const { createRequire } = require("node:module");
 const { ensureDir, pathExists } = require("./utils");
 
 const execFileAsync = promisify(execFile);
+const { runFfmpeg } = require("./ffmpegGateway");
 const WIDTH = 1920;
 const HEIGHT = 1080;
 const CAPTION_Y = 760;
 const CAPTION_H = 250;
+let cachedFfmpegEncoders = null;
 
-async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [] }) {
+async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto" }) {
   await assertCommand("ffmpeg", ["-version"]);
   const slidesDir = path.join(outputDir, "slides");
   await ensureDir(slidesDir);
@@ -26,13 +28,14 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
       pushLog(logs, `Rendering frame ${index + 1}/${totalFrames}: ${frame.title || frame.kind}`);
     }
 
-    const existingImage = await findExistingSceneImage(outputDir, story, frame.sectionIndex, frame.sentenceIndex);
+    const existingImage = await findExistingSceneImage(outputDir, story, frame);
     const imageDataUri = existingImage ? await imageToDataUri(existingImage) : null;
     const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri });
     await sharp(Buffer.from(svg)).png().toFile(path.join(slidesDir, `${frame.id}.png`));
   }
 
-  pushLog(logs, `Encoding final MP4 (${frames.length} frames)…`);
+  const encoder = await resolveVideoEncoder(videoEncoder, logs);
+  pushLog(logs, `Encoding final MP4 (${frames.length} frames) with ${encoder.label}…`);
   const concatPath = path.join(slidesDir, "concat.txt");
   const lines = [];
   frames.forEach((frame) => {
@@ -81,18 +84,18 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
     );
   }
 
-  ffmpegArgs.push(
-    "-c:v",
-    "libx264",
-    "-c:a",
-    "aac",
-    "-shortest",
-    videoPath
-  );
+  ffmpegArgs.push(...encoder.args, "-c:a", "aac", "-shortest", videoPath);
 
-  await execFileAsync("ffmpeg", ffmpegArgs, {
-    maxBuffer: 1024 * 1024 * 16
-  });
+  try {
+    await runFfmpeg(ffmpegArgs, { maxBuffer: 1024 * 1024 * 16 });
+  } catch (error) {
+    if (encoder.id === "cpu-libx264") throw error;
+    pushLog(logs, `${encoder.label} failed during encode. Falling back to CPU libx264.`);
+    const fallbackArgs = [...ffmpegArgs];
+    const videoPathIndex = fallbackArgs.lastIndexOf(videoPath);
+    fallbackArgs.splice(videoPathIndex - encoder.args.length - 3, encoder.args.length, ...encoderArgs("cpu-libx264").args);
+    await runFfmpeg(fallbackArgs, { maxBuffer: 1024 * 1024 * 16 });
+  }
 
   return {
     videoPath,
@@ -106,6 +109,68 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
       durationSeconds: frame.durationSeconds
     }))
   };
+}
+
+async function resolveVideoEncoder(preference = "auto", logs = []) {
+  const wanted = normalizeVideoEncoderPreference(preference);
+  const encoders = await getFfmpegEncoders();
+  const candidates = wanted === "auto"
+    ? ["apple-videotoolbox", "nvidia-nvenc", "intel-qsv", "cpu-libx264"]
+    : [wanted, "cpu-libx264"];
+
+  for (const candidate of candidates) {
+    const encoder = encoderArgs(candidate);
+    if (!encoder.requires || encoders.includes(encoder.requires)) return encoder;
+    pushLog(logs, `${encoder.label} is not available in this ffmpeg build.`);
+  }
+  return encoderArgs("cpu-libx264");
+}
+
+function normalizeVideoEncoderPreference(value) {
+  const text = String(value || "auto").trim().toLowerCase();
+  return ["auto", "cpu-libx264", "apple-videotoolbox", "nvidia-nvenc", "intel-qsv"].includes(text) ? text : "auto";
+}
+
+function encoderArgs(id) {
+  if (id === "apple-videotoolbox") {
+    return {
+      id,
+      label: "Apple VideoToolbox (h264_videotoolbox)",
+      requires: "h264_videotoolbox",
+      args: ["-c:v", "h264_videotoolbox", "-b:v", "6000k"]
+    };
+  }
+  if (id === "nvidia-nvenc") {
+    return {
+      id,
+      label: "NVIDIA NVENC (h264_nvenc)",
+      requires: "h264_nvenc",
+      args: ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "6000k"]
+    };
+  }
+  if (id === "intel-qsv") {
+    return {
+      id,
+      label: "Intel Quick Sync (h264_qsv)",
+      requires: "h264_qsv",
+      args: ["-c:v", "h264_qsv", "-b:v", "6000k"]
+    };
+  }
+  return {
+    id: "cpu-libx264",
+    label: "CPU libx264",
+    requires: "libx264",
+    args: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+  };
+}
+
+async function getFfmpegEncoders() {
+  if (cachedFfmpegEncoders) return cachedFfmpegEncoders;
+  const { stdout } = await execFileAsync("ffmpeg", ["-hide_banner", "-encoders"], {
+    maxBuffer: 1024 * 1024 * 4
+  });
+  cachedFfmpegEncoders = stdout;
+  return cachedFfmpegEncoders;
 }
 
 function buildLearningFrames(story, readingItems) {
@@ -193,6 +258,7 @@ function createSentenceFrame(story, item, sectionIndex, index) {
   const section = story.sections[sectionIndex] || story.sections[0];
   const matchedVocabulary = selectVocabularyForSentence(story, section, item.text);
   const [vocabWord, vocabTranslation, vocabPhonetic] = matchedVocabulary || [];
+  const podcast = isPodcastStory(story);
   return baseFrame(item, sectionIndex, index, {
     kind: "sentence",
     title: cleanTitle(section.title),
@@ -202,9 +268,10 @@ function createSentenceFrame(story, item, sectionIndex, index) {
     vocabTranslation,
     vocabPhonetic,
     highlightedTerm: vocabWord,
-    speaker: item.speaker,
-    speakerName: item.speakerName,
-    isPodcast: story.template?.id === "podcast-dialogue" || item.speaker === "host-a" || item.speaker === "host-b",
+    speaker: podcast ? item.speaker : null,
+    speakerName: podcast ? item.speakerName : null,
+    sentenceIndex: item.sentenceIndex,
+    isPodcast: podcast,
     visual: section.visual
   });
 }
@@ -252,13 +319,21 @@ function baseFrame(item, sectionIndex, index, extra) {
   };
 }
 
-async function findExistingSceneImage(outputDir, story, index, sentenceIndex = 0) {
+async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIndex = 0) {
+  if (isPodcastStory(story)) {
+    const speaker = typeof frameOrIndex === "object" ? frameOrIndex.speaker : null;
+    const podcastSceneId = speaker === "host-b" ? "podcast-host-b" : "podcast-host-a";
+    const podcastImage = await findImageBySceneId(outputDir, podcastSceneId);
+    if (podcastImage) return podcastImage;
+  }
+
+  const index = typeof frameOrIndex === "object" ? frameOrIndex.sectionIndex : frameOrIndex;
+  const frameSentenceIndex = typeof frameOrIndex === "object" ? frameOrIndex.sentenceIndex : sentenceIndex;
   const section = story.sections[index] || {};
   const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
   const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
   const variantSuffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
-  const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story.mode === "pure-story" ? 3 : 2;
-  const beatIndex = Math.max(0, Math.floor(Number(sentenceIndex || 0) / beatSize));
+  const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
   const beatBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}-${String(beatIndex + 1).padStart(2, "0")}`);
   const variantBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}`);
   const legacyBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}`);
@@ -277,6 +352,55 @@ async function findExistingSceneImage(outputDir, story, index, sentenceIndex = 0
     `${legacyBase}.webp`
   ];
   for (const candidate of candidates) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function getImageBeatIndexForSentence(section, sentenceIndex = 0, story = null) {
+  const beats = getSectionImageBeats(section);
+  if (beats.length) {
+    const index = Math.max(0, Number(sentenceIndex || 0));
+    const match = beats.findIndex((beat) => index >= beat.sentenceStart && index <= beat.sentenceEnd);
+    if (match >= 0) return match;
+  }
+  const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story?.mode === "pure-story" ? 4 : 2;
+  return Math.max(0, Math.floor(Number(sentenceIndex || 0) / beatSize));
+}
+
+function getSectionImageBeats(section) {
+  const sentences = section.sentences || [];
+  const sentenceCount = Math.max(1, sentences.length);
+  if (Array.isArray(section.imageBeats) && section.imageBeats.length) {
+    return section.imageBeats
+      .map((beat) => {
+        const start = clampInteger(beat.sentenceStart, 0, sentenceCount - 1);
+        const end = clampInteger(beat.sentenceEnd, start, sentenceCount - 1);
+        return {
+          ...beat,
+          sentenceStart: start,
+          sentenceEnd: Math.max(start, end)
+        };
+      })
+      .sort((a, b) => a.sentenceStart - b.sentenceStart)
+      .slice(0, 2);
+  }
+  return [{
+    sentenceStart: 0,
+    sentenceEnd: sentenceCount - 1
+  }];
+}
+
+function clampInteger(value, min, max) {
+  const number = Number(value);
+  const integer = Number.isFinite(number) ? Math.trunc(number) : min;
+  return Math.min(max, Math.max(min, integer));
+}
+
+async function findImageBySceneId(outputDir, sceneId) {
+  const base = path.join(outputDir, "images", sceneId);
+  for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+    const candidate = `${base}${ext}`;
     if (await pathExists(candidate)) return candidate;
   }
   return null;
@@ -330,7 +454,7 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri }) {
   ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame) : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
   ${renderPodcastHosts(frame)}
-  ${frame.vocabWord ? renderVocabularyOverlay(frame) : ""}
+  ${frame.vocabWord ? renderVocabularyOverlay(frame, { podcast: true }) : ""}
   ${renderPodcastCaption(frame)}` : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
   ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame) : ""}
@@ -345,51 +469,54 @@ function renderPodcastHosts(frame) {
   const activeA = frame.speaker !== "host-b";
   const activeB = frame.speaker === "host-b";
   return `
-  ${renderPodcastHostCard({ x: 120, y: 90, side: "left", label: "Host A", active: activeA })}
-  ${renderPodcastHostCard({ x: 1320, y: 90, side: "right", label: "Host B", active: activeB })}`;
+  ${renderPodcastHostCard({ x: 112, y: 96, side: "left", label: "Host A", active: activeA })}
+  ${renderPodcastHostCard({ x: 1388, y: 96, side: "right", label: "Host B", active: activeB })}`;
 }
 
 function renderPodcastHostCard({ x, y, side, label, active }) {
-  const avatarX = x + (side === "left" ? 92 : 338);
-  const micX = x + (side === "left" ? 222 : 180);
-  const labelX = x + (side === "left" ? 92 : 338);
+  const width = 420;
+  const avatarX = x + (side === "left" ? 78 : 342);
+  const micX = x + (side === "left" ? 205 : 158);
+  const labelX = x + (side === "left" ? 78 : 342);
   const accent = active ? "#0b84ff" : "#94a3b8";
-  const opacity = active ? 0.86 : 0.52;
+  const opacity = active ? 0.58 : 0.34;
   return `
   <g opacity="${opacity}">
-    <rect x="${x}" y="${y}" width="480" height="210" rx="34" fill="#061527" opacity="0.72"/>
-    <rect x="${x}" y="${y}" width="480" height="210" rx="34" fill="none" stroke="${accent}" stroke-width="${active ? 4 : 2}" opacity="0.62"/>
-    <circle cx="${avatarX}" cy="${y + 82}" r="48" fill="${accent}" opacity="0.96"/>
-    <circle cx="${avatarX}" cy="${y + 66}" r="21" fill="#eaf5ff"/>
-    <path d="M${avatarX - 40} ${y + 134} C${avatarX - 26} ${y + 100} ${avatarX + 26} ${y + 100} ${avatarX + 40} ${y + 134} Z" fill="#eaf5ff"/>
-    <rect x="${micX}" y="${y + 58}" width="30" height="94" rx="15" fill="#e2e8f0"/>
-    <rect x="${micX - 38}" y="${y + 148}" width="106" height="10" rx="5" fill="#e2e8f0"/>
-    <path d="M${micX - 28} ${y + 90} C${micX - 28} ${y + 150} ${micX + 58} ${y + 150} ${micX + 58} ${y + 90}" stroke="${accent}" stroke-width="7" fill="none" stroke-linecap="round"/>
-    <text x="${labelX}" y="${y + 178}" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="900" fill="#ffffff">${label}</text>
+    <rect x="${x}" y="${y}" width="${width}" height="178" rx="30" fill="#061527" opacity="0.36"/>
+    <rect x="${x}" y="${y}" width="${width}" height="178" rx="30" fill="none" stroke="${accent}" stroke-width="${active ? 2.2 : 1.3}" opacity="0.46"/>
+    <circle cx="${avatarX}" cy="${y + 72}" r="40" fill="${accent}" opacity="0.9"/>
+    <circle cx="${avatarX}" cy="${y + 58}" r="17" fill="#eaf5ff"/>
+    <path d="M${avatarX - 33} ${y + 116} C${avatarX - 22} ${y + 88} ${avatarX + 22} ${y + 88} ${avatarX + 33} ${y + 116} Z" fill="#eaf5ff"/>
+    <rect x="${micX}" y="${y + 48}" width="26" height="78" rx="13" fill="#e2e8f0"/>
+    <rect x="${micX - 33}" y="${y + 124}" width="92" height="9" rx="4.5" fill="#e2e8f0"/>
+    <path d="M${micX - 24} ${y + 74} C${micX - 24} ${y + 126} ${micX + 50} ${y + 126} ${micX + 50} ${y + 74}" stroke="${accent}" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <text x="${labelX}" y="${y + 150}" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="900" fill="#ffffff">${label}</text>
   </g>`;
 }
 
 function renderPodcastCaption(frame) {
   const isHostB = frame.speaker === "host-b";
-  const x = isHostB ? 610 : 150;
-  const speakerX = isHostB ? 1615 : 305;
-  const textX = isHostB ? 960 : 960;
+  const captionY = 704;
+  const captionH = 230;
+  const x = 230;
+  const speakerX = isHostB ? 1548 : 372;
+  const textX = 960;
   const label = frame.speakerName || (isHostB ? "Host B" : "Host A");
   return `
-  <rect x="${x}" y="${CAPTION_Y}" width="1160" height="${CAPTION_H}" rx="36" fill="#04111f" opacity="0.65"/>
-  <rect x="${x}" y="${CAPTION_Y}" width="1160" height="${CAPTION_H}" rx="36" fill="none" stroke="${isHostB ? "#f59e0b" : "#38bdf8"}" stroke-width="3" opacity="0.72"/>
-  <rect x="${isHostB ? 1460 : 180}" y="${CAPTION_Y + 28}" width="270" height="52" rx="26" fill="${isHostB ? "#f59e0b" : "#0b84ff"}" opacity="0.92"/>
-  <text x="${speakerX}" y="${CAPTION_Y + 63}" text-anchor="middle" font-family="Arial, sans-serif" font-size="25" font-weight="900" fill="#ffffff">${escapeXml(label)}</text>
-  ${renderPodcastBottomText(frame, textX)}`;
+  <rect x="${x}" y="${captionY}" width="1460" height="${captionH}" rx="34" fill="#04111f" opacity="0.62"/>
+  <rect x="${x}" y="${captionY}" width="1460" height="${captionH}" rx="34" fill="none" stroke="${isHostB ? "#f59e0b" : "#38bdf8"}" stroke-width="2.6" opacity="0.68"/>
+  <rect x="${isHostB ? 1392 : 258}" y="${captionY + 26}" width="312" height="52" rx="26" fill="${isHostB ? "#f59e0b" : "#0b84ff"}" opacity="0.94"/>
+  <text x="${speakerX}" y="${captionY + 62}" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="900" fill="#ffffff">${escapeXml(label)}</text>
+  ${renderPodcastBottomText(frame, textX, captionY, captionH)}`;
 }
 
-function renderPodcastBottomText(frame, textX) {
-  const englishLines = wrapWords(frame.english || "", 40).slice(0, 2);
-  const chineseLines = wrapMixed(frame.chinese || "", 34).slice(0, 2);
-  const englishFont = englishLines.length > 1 ? 44 : 48;
-  const chineseFont = chineseLines.length > 1 ? 29 : 31;
-  const englishY = CAPTION_Y + 122;
-  const chineseY = CAPTION_Y + 205;
+function renderPodcastBottomText(frame, textX, captionY, captionH) {
+  const englishLines = wrapWords(frame.english || "", 46).slice(0, 2);
+  const chineseLines = wrapMixed(frame.chinese || "", 42).slice(0, 2);
+  const englishFont = englishLines.length > 1 ? 42 : 46;
+  const chineseFont = chineseLines.length > 1 ? 27 : 29;
+  const englishY = captionY + 118;
+  const chineseY = captionY + 188;
   return `
   ${renderEnglishCaptionLinesAt(englishLines, frame.highlightedTerm, englishY, englishFont, textX)}
   ${chineseLines.map((line, index) => `<text x="${textX}" y="${chineseY + index * 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.84" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
@@ -414,10 +541,10 @@ function renderCoverOverlay(story, frame) {
   <polygon points="1346,384 1346,476 1428,430" fill="#ffffff" opacity="0.96"/>
   <text x="1380" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="950" fill="#0f172a">Listen &amp; Shadow</text>
   <text x="1380" y="665" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="850" fill="#1d4ed8">边听边读 · 口语跟读</text>
-  <text x="250" y="760" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
-  ${summaryLines.map((line, index) => `<text x="250" y="${808 + index * 34}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
-  <text x="250" y="878" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
-  <text x="250" y="916" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
+  <text x="250" y="720" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
+  ${summaryLines.map((line, index) => `<text x="250" y="${768 + index * 34}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
+  <text x="250" y="838" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
+  <text x="250" y="876" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
 }
 
 function renderVocabularyReviewOverlay(frame) {
@@ -468,18 +595,40 @@ function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordF
   </g>`;
 }
 
-function renderVocabularyOverlay(frame) {
+function renderVocabularyOverlay(frame, options = {}) {
   const [word, translation, phonetic] = [frame.vocabWord, frame.vocabTranslation, frame.vocabPhonetic];
   if (!word) return "";
+  if (options.podcast) return renderPodcastVocabularyOverlay(frame);
   const wordLines = wrapMixed(word, 24).slice(0, 1);
   const phoneticLines = wrapMixed(phonetic || "", 26).slice(0, 1);
   const translationLines = wrapMixed(translation || "", 18).slice(0, 1);
+  const x = options.podcast ? 745 : 1430;
+  const y = options.podcast ? 82 : 70;
+  const width = options.podcast ? 430 : 430;
+  const height = options.podcast ? 134 : 136;
   return `
-  <rect x="1430" y="70" width="430" height="136" rx="22" fill="#061527" opacity="0.74"/>
-  <rect x="1430" y="70" width="430" height="136" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.44"/>
-  ${wordLines.map((line) => `<text x="1458" y="112" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
-  ${phoneticLines.map((line) => `<text x="1458" y="149" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
-  ${translationLines.map((line) => `<text x="1458" y="184" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="#061527" opacity="0.72"/>
+  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.46"/>
+  ${wordLines.map((line) => `<text x="${x + 28}" y="${y + 42}" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
+  ${phoneticLines.map((line) => `<text x="${x + 28}" y="${y + 79}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
+  ${translationLines.map((line) => `<text x="${x + 28}" y="${y + 114}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+}
+
+function renderPodcastVocabularyOverlay(frame) {
+  const isHostB = frame.speaker === "host-b";
+  const x = isHostB ? 1195 : 295;
+  const y = 650;
+  const width = 430;
+  const accent = isHostB ? "#f59e0b" : "#38bdf8";
+  const word = fitSvgText(frame.vocabWord || "", 23);
+  const phonetic = fitSvgText(frame.vocabPhonetic || "", 25);
+  const translation = fitSvgText(frame.vocabTranslation || "", 14);
+  return `
+  <rect x="${x}" y="${y}" width="${width}" height="82" rx="24" fill="#061527" opacity="0.72"/>
+  <rect x="${x}" y="${y}" width="${width}" height="82" rx="24" fill="none" stroke="${accent}" stroke-width="2.2" opacity="0.62"/>
+  <text x="${x + 28}" y="${y + 33}" font-family="Georgia, 'Times New Roman', serif" font-size="${fitFontSize(word, 25, 190)}" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(word)}</text>
+  <text x="${x + 28}" y="${y + 63}" font-family="Arial, sans-serif" font-size="${fitFontSize(phonetic, 18, 175)}" font-weight="800" fill="#f59e0b">${escapeXml(phonetic)}</text>
+  <text x="${x + 245}" y="${y + 63}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${fitFontSize(translation, 20, 140, true)}" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(translation)}</text>`;
 }
 
 function renderBottomText(frame) {
@@ -836,6 +985,10 @@ function getPalette(index) {
 
 function cleanTitle(title) {
   return String(title).replace(/\s+-\s+(Listen|Shadow|Review \d+)$/, "");
+}
+
+function isPodcastStory(story) {
+  return story?.template?.id === "podcast-dialogue";
 }
 
 async function imageToDataUri(filePath) {

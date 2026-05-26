@@ -25,16 +25,21 @@ const DEFAULT_MINIMAX = {
   music: MINIMAX_MUSIC_MODEL,
   englishVoice: "English_Graceful_Lady",
   chineseVoice: "Chinese (Mandarin)_Sweet_Lady",
-  podcastHostAVoice: "English_Graceful_Lady",
+  podcastHostAVoice: "English_captivating_female1",
   podcastHostBVoice: "English_Trustworthy_Man",
   musicTrackCount: 3
 };
 
 const DEFAULT_XIAOMI = {
   baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+  ttsBaseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
   textModel: "MiMo-V2.5-Pro",
   ttsModel: "MiMo-V2.5-TTS",
+  voice: "mimo_default",
+  podcastHostAVoice: "Mia",
+  podcastHostBVoice: "Milo",
   ttsModels: [
+    "mimo-v2-tts",
     "MiMo-V2.5-TTS-VoiceClone",
     "MiMo-V2.5-TTS-VoiceDesign",
     "MiMo-V2.5-TTS",
@@ -66,7 +71,8 @@ const DEFAULT_GOOGLE = {
 
 const DEFAULT_MEDIA = {
   ttsProvider: "minimax",
-  imageProvider: "minimax"
+  imageProvider: "minimax",
+  videoEncoder: "auto"
 };
 
 const DEFAULT_PROFILE_ID = "balanced";
@@ -142,9 +148,14 @@ async function getEffectiveSettings() {
     },
     xiaomi: {
       apiKey: raw.xiaomi?.apiKey || envXiaomiKey,
+      ttsApiKey: raw.xiaomi?.ttsApiKey || local.xiaomi?.ttsApiKey || raw.xiaomi?.apiKey || envXiaomiKey,
       baseUrl: raw.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
+      ttsBaseUrl: raw.xiaomi?.ttsBaseUrl || local.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
       textModel: normalizeXiaomiModel(raw.xiaomi?.textModel, DEFAULT_XIAOMI.textModel),
       ttsModel: normalizeXiaomiModel(raw.xiaomi?.ttsModel, DEFAULT_XIAOMI.ttsModel),
+      voice: raw.xiaomi?.voice || local.xiaomi?.voice || DEFAULT_XIAOMI.voice,
+      podcastHostAVoice: raw.xiaomi?.podcastHostAVoice || local.xiaomi?.podcastHostAVoice || DEFAULT_XIAOMI.podcastHostAVoice,
+      podcastHostBVoice: raw.xiaomi?.podcastHostBVoice || local.xiaomi?.podcastHostBVoice || DEFAULT_XIAOMI.podcastHostBVoice,
       keySource: raw.xiaomi?.apiKey ? "settings.local.json" : envXiaomiKey ? "environment" : null
     },
     google: {
@@ -192,10 +203,16 @@ async function getSettingsSummary() {
     xiaomi: {
       hasApiKey: Boolean(settings.xiaomi?.apiKey),
       maskedApiKey: maskApiKey(settings.xiaomi?.apiKey),
+      hasTtsApiKey: Boolean(settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey),
+      maskedTtsApiKey: maskApiKey(settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey),
       keySource: settings.xiaomi?.keySource,
       baseUrl: settings.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
+      ttsBaseUrl: settings.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
       textModel: settings.xiaomi?.textModel || DEFAULT_XIAOMI.textModel,
       ttsModel: settings.xiaomi?.ttsModel || DEFAULT_XIAOMI.ttsModel,
+      voice: settings.xiaomi?.voice || DEFAULT_XIAOMI.voice,
+      podcastHostAVoice: settings.xiaomi?.podcastHostAVoice || DEFAULT_XIAOMI.podcastHostAVoice,
+      podcastHostBVoice: settings.xiaomi?.podcastHostBVoice || DEFAULT_XIAOMI.podcastHostBVoice,
       textModels: DEFAULT_XIAOMI.textModels,
       ttsModels: DEFAULT_XIAOMI.ttsModels
     },
@@ -538,7 +555,8 @@ function normalizeSettings(settings = {}) {
     provider: settings.provider === "xiaomi" ? "xiaomi" : "minimax",
     media: {
       ttsProvider: normalizeProvider(settings.media?.ttsProvider, DEFAULT_MEDIA.ttsProvider, ["minimax", "xiaomi", "google"]),
-      imageProvider: normalizeProvider(settings.media?.imageProvider, DEFAULT_MEDIA.imageProvider, ["minimax", "google"])
+      imageProvider: normalizeProvider(settings.media?.imageProvider, DEFAULT_MEDIA.imageProvider, ["minimax", "google"]),
+      videoEncoder: normalizeProvider(settings.media?.videoEncoder, DEFAULT_MEDIA.videoEncoder, ["auto", "cpu-libx264", "apple-videotoolbox", "nvidia-nvenc", "intel-qsv"])
     },
     models: {
       text: textModel,
@@ -555,9 +573,14 @@ function normalizeSettings(settings = {}) {
     },
     xiaomi: {
       apiKey: typeof settings.xiaomi?.apiKey === "string" ? settings.xiaomi.apiKey.trim() : "",
+      ttsApiKey: typeof settings.xiaomi?.ttsApiKey === "string" ? settings.xiaomi.ttsApiKey.trim() : "",
       baseUrl: cleanModel(settings.xiaomi?.baseUrl, DEFAULT_XIAOMI.baseUrl),
+      ttsBaseUrl: cleanModel(settings.xiaomi?.ttsBaseUrl, DEFAULT_XIAOMI.ttsBaseUrl),
       textModel: normalizeXiaomiModel(settings.xiaomi?.textModel, DEFAULT_XIAOMI.textModel),
       ttsModel: normalizeXiaomiModel(settings.xiaomi?.ttsModel, DEFAULT_XIAOMI.ttsModel),
+      voice: cleanModel(settings.xiaomi?.voice, DEFAULT_XIAOMI.voice),
+      podcastHostAVoice: cleanModel(settings.xiaomi?.podcastHostAVoice, DEFAULT_XIAOMI.podcastHostAVoice),
+      podcastHostBVoice: cleanModel(settings.xiaomi?.podcastHostBVoice, DEFAULT_XIAOMI.podcastHostBVoice),
       keySource: settings.xiaomi?.keySource || null
     },
     google: {
@@ -669,9 +692,14 @@ async function writeLocalSettings(settings) {
     },
     xiaomi: {
       apiKey: settings.xiaomi?.apiKey || "",
+      ttsApiKey: settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey || "",
       baseUrl: settings.xiaomi?.baseUrl || DEFAULT_XIAOMI.baseUrl,
+      ttsBaseUrl: settings.xiaomi?.ttsBaseUrl || DEFAULT_XIAOMI.ttsBaseUrl,
       textModel: settings.xiaomi?.textModel || DEFAULT_XIAOMI.textModel,
-      ttsModel: settings.xiaomi?.ttsModel || DEFAULT_XIAOMI.ttsModel
+      ttsModel: settings.xiaomi?.ttsModel || DEFAULT_XIAOMI.ttsModel,
+      voice: settings.xiaomi?.voice || DEFAULT_XIAOMI.voice,
+      podcastHostAVoice: settings.xiaomi?.podcastHostAVoice || DEFAULT_XIAOMI.podcastHostAVoice,
+      podcastHostBVoice: settings.xiaomi?.podcastHostBVoice || DEFAULT_XIAOMI.podcastHostBVoice
     },
     google: {
       apiKey: settings.google?.apiKey || "",

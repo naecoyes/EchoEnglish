@@ -1,6 +1,6 @@
 # EchoEnglish
 
-EchoEnglish is a local AI workflow for generating English shadowing videos from any topic. It creates a reviewed script, sentence-level narration, 100+ scene images, bilingual captions, vocabulary notes, background music, and a final MP4.
+EchoEnglish is a local AI workflow for generating English shadowing videos from any topic. It creates a reviewed script, sentence-level narration, story-beat scene images, bilingual captions, vocabulary notes, background music, YouTube publishing copy, and a final MP4.
 
 The dashboard is designed for long 15-minute learning videos, with recoverable generation stages so API quota errors, network failures, or service restarts do not waste completed audio, images, or music.
 
@@ -49,6 +49,8 @@ outputs/{slug}/
   subtitles.srt
   audio.wav
   image-prompts.md
+  youtube-copy.md
+  youtube-copy.json
   audio-manifest.json
   image-manifest.json
   music-manifest.json
@@ -91,8 +93,11 @@ Configure models from the Settings page. Keys are saved only in `settings.local.
 | TTS | MiniMax, Google Gemini TTS, Xiaomi MiMo TTS | Podcast mode supports two host voices |
 | Image | MiniMax image-01, Google Imagen | MiniMax prompts are compressed under API length limits |
 | Music | MiniMax music-2.6 | Generates 3-4 background tracks and merges them |
+| Video encode | FFmpeg CPU/GPU encoders | Auto-detects hardware encoder when available |
 
-Recommended stable setup:
+### Recommended Setup
+
+MiniMax stack (stable default):
 
 - Text: DashScope/Qwen for long drafts
 - TTS: MiniMax `speech-2.8-hd`
@@ -100,7 +105,41 @@ Recommended stable setup:
 - Music: MiniMax `music-2.6`
 - Search: Tavily
 
-Xiaomi MiMo can be configured for text or TTS experiments. For long 15-minute drafts, Qwen is currently the more reliable default.
+Xiaomi MiMo stack (proven alternative):
+
+- Text: Xiaomi `mimo-v2.5-pro`
+- TTS: Xiaomi `mimo-v2.5-tts` (endpoint: `/chat/completions`, not `/audio/speech`)
+- Voice: `mimo_default`, or podcast hosts `Mia` / `Milo`
+- Image: MiniMax `image-01` (Xiaomi does not provide an image API)
+- Music: MiniMax `music-2.6`
+
+### Xiaomi MiMo TTS Details
+
+MiMo TTS uses a chat-completions style API, not the OpenAI-compatible `/audio/speech` endpoint:
+
+```text
+POST {ttsBaseUrl}/chat/completions
+Authorization: Bearer {apiKey}
+{
+  "model": "mimo-v2.5-tts",
+  "messages": [{ "role": "assistant", "content": "Text to speak" }],
+  "voice": "mimo_default"
+}
+```
+
+Response returns base64 audio at `choices[0].message.audio.data`.
+
+Available voices:
+
+| Voice | Use case |
+| --- | --- |
+| `mimo_default` | General narration |
+| `Mia` | Podcast host A (female) |
+| `Milo` | Podcast host B (male) |
+| `Chloe`, `Dean` | English voices |
+| `冰糖`, `茉莉`, `苏打`, `白桦` | Chinese voices |
+
+Model names must be lowercase (e.g. `mimo-v2.5-tts`, not `MiMo-V2.5-TTS`). The API rejects uppercase model identifiers.
 
 ## Quick Start
 
@@ -118,6 +157,8 @@ http://127.0.0.1:3002/generate
 
 The server binds to `0.0.0.0`, so LAN URLs are printed at startup. Configure a PIN in Settings before exposing it outside your machine.
 
+> **Port note**: OrbStack on macOS may intercept port 3001. Use `PORT=3002` to avoid conflicts.
+
 ## Settings
 
 Open:
@@ -131,12 +172,13 @@ Configure:
 - MiniMax API key
 - Tavily API key
 - LLM API base, model, and key
-- Xiaomi MiMo key, base URL, text model, and TTS model
+- Xiaomi MiMo key, base URL, text model, TTS model, TTS base URL, TTS API key, default voice, and podcast host voices
 - Google API key, Imagen model, Gemini TTS model, and voice
 - TTS provider and image provider
 - Podcast host A/B voices
 - Music track count
 - Access PIN
+- Video encoder: `auto`, `cpu-libx264`, `apple-videotoolbox`, `nvidia-nvenc`, or `intel-qsv`
 
 Fallback environment variables are also supported:
 
@@ -190,6 +232,28 @@ Generated videos include:
 
 Use Preview -> Re-render Video UI to regenerate only slides and MP4 from existing script/audio/images/music. This does not call LLM, TTS, image, or music APIs.
 
+## Hardware Video Encoding
+
+Video composition uses FFmpeg. In Settings -> Video, choose:
+
+| Encoder | Best for |
+| --- | --- |
+| Auto | Recommended default. Detects available hardware encoder. |
+| Apple VideoToolbox | macOS hardware H.264 encoding. |
+| NVIDIA NVENC | NVIDIA GPU H.264 encoding. |
+| Intel Quick Sync | Intel hardware H.264 encoding. |
+| CPU libx264 | Reliable software fallback. |
+
+Hardware encoding only speeds up the `compose` stage. It does not speed up LLM, TTS, image generation, or music generation.
+
+Check local FFmpeg support:
+
+```bash
+ffmpeg -hide_banner -encoders | grep -E 'h264_videotoolbox|h264_nvenc|h264_qsv|libx264'
+```
+
+If a selected hardware encoder fails during export, EchoEnglish automatically retries with CPU `libx264`.
+
 ## CLI
 
 The web dashboard is the primary workflow, but CLI generation remains available:
@@ -208,7 +272,11 @@ MiniMax image prompts must be shorter than 1500 characters. EchoEnglish now comp
 
 ### Status appears stuck in Scene Images
 
-Image generation may be slow because a 15-minute video can request 110-120 images. The Status page reads `image-manifest.json` and shows counts such as `Images 14/116`. If a request times out or the server restarts, the job becomes recoverable.
+Image generation may be slow because a 15-minute video requests about 30-45 story-beat images, normally 2-3 images per minute. The Status page reads `image-manifest.json` and shows counts such as `Images 14/36`. If a request times out, quota is exhausted, or the server restarts, the job becomes recoverable.
+
+### Regenerate only images
+
+Use `POST /api/outputs/{slug}/regenerate-images` to regenerate the current script's story-beat images and re-render MP4 without calling the LLM, TTS, or music APIs. The endpoint backs up existing images first and restores them automatically if the image API fails.
 
 ### Draft quality is repetitive
 
@@ -217,6 +285,16 @@ Use the draft review step and revise with feedback before confirming. For factua
 ### Video UI changes needed
 
 Use Re-render Video UI from Preview. It reuses existing assets and avoids extra API cost.
+
+### Xiaomi MiMo TTS errors
+
+**404 Not Found**: MiMo TTS does not use the OpenAI-compatible `/audio/speech` endpoint. It uses `/chat/completions` with a messages-based payload. Ensure `ttsBaseUrl` points to the correct base (e.g. `https://token-plan-sgp.xiaomimimo.com/v1`), and the code appends `/chat/completions`.
+
+**401 Unauthorized**: The dedicated TTS API key may not work. Use the main Xiaomi API key for both text and TTS.
+
+**"Not supported model"**: Model names must be lowercase. `MiMo-V2.5-TTS` will be rejected; use `mimo-v2.5-tts`. The code normalizes this automatically.
+
+**Voice "alloy" not found**: MiMo does not have an `alloy` voice. Use `mimo_default` for narration, or `Mia`/`Milo` for podcast hosts.
 
 ## Development
 

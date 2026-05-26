@@ -9,7 +9,7 @@ const { fetchBufferWithPolicy } = require("./apiLimiter");
 
 const execFileAsync = promisify(execFile);
 
-async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, voice, speed, requestIntervalMs, logs = [] }) {
+async function createAudio({ readingItems, outputDir, apiKey, baseUrl, ttsBaseUrl, model, voice, speed, requestIntervalMs, logs = [] }) {
   if (!apiKey) {
     throw new Error("XIAOMI_API_KEY is required for Xiaomi TTS.");
   }
@@ -17,7 +17,8 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
   await assertCommand("ffmpeg", ["-version"]);
   await assertCommand("ffprobe", ["-version"]);
 
-  const apiUrl = `${(baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1").replace(/\/$/, "")}/audio/speech`;
+  const apiUrl = `${(ttsBaseUrl || baseUrl || "https://api.mimo-v2.com/v1").replace(/\/$/, "")}/audio/speech`;
+  const apiModel = normalizeTtsModel(model);
   const workDir = path.join(outputDir, "audio-work");
   await ensureDir(workDir);
   const cacheDir = path.join(path.dirname(outputDir), ".tts-cache");
@@ -42,7 +43,7 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
 
     const baseName = String(index + 1).padStart(4, "0");
     const selectedVoice = item.voice || voice;
-    const cacheKey = createCacheKey({ model, voice: selectedVoice, text: speechText, speed });
+    const cacheKey = createCacheKey({ model: apiModel, voice: selectedVoice, text: speechText, speed });
     const wavPath = path.join(cacheDir, `${cacheKey}.wav`);
     await updateAudioManifest(outputDir, item.id, {
       status: "running",
@@ -65,7 +66,7 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
         const audioBytes = await synthesizeXiaomi({
           apiUrl,
           apiKey,
-          model,
+          model: apiModel,
           voice: selectedVoice,
           text: speechText,
           speed
@@ -137,7 +138,8 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
     provider: "xiaomi",
     audioPath,
     voice,
-    model,
+    model: apiModel,
+    configuredModel: model,
     durationSeconds: cursor,
     fallbackCount: 0,
     items: timedItems
@@ -156,6 +158,13 @@ function createCacheKey({ model, voice, text, speed }) {
     .digest("hex");
 }
 
+function normalizeTtsModel(model) {
+  const value = String(model || "MiMo-V2.5-TTS").trim();
+  const lower = value.toLowerCase();
+  if (lower === "mimo-v2.5-tts" || lower === "mimo-v2-tts") return "mimo-v2-tts";
+  return lower;
+}
+
 async function waitForRequestSlot(lastRequestAt, minimumRequestIntervalMs) {
   if (!lastRequestAt || minimumRequestIntervalMs <= 0) return;
   const elapsed = Date.now() - lastRequestAt;
@@ -168,22 +177,18 @@ async function synthesizeXiaomi({ apiUrl, apiKey, model, voice, text, speed }) {
     model,
     input: text,
     voice: voice || "alloy",
-    response_format: "mp3",
-    speed: speed || 1.0
+    response_format: "mp3"
   };
+  if (speed) body.speed = Number(speed);
 
-  const audioBytes = await fetchBufferWithPolicy("xiaomi:tts", apiUrl, {
+  return await fetchWithRetry(apiUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
-  }, {
-    minIntervalMs: 3500
   });
-
-  return audioBytes;
 }
 
 async function fetchWithRetry(url, options) {
@@ -218,8 +223,17 @@ function formatXiaomiTtsError(status, errorText, url) {
     .replace(/\s+/g, " ")
     .trim();
   if (status === 404) {
-    return `Xiaomi TTS endpoint not found at ${url}. The current MiMo endpoint exposes text models, so narration will use MiniMax fallback.`;
+    return `Xiaomi TTS endpoint not found at ${url}. Check ttsBaseUrl in settings.`;
   }
+  if (status === 401) {
+    return `Xiaomi TTS authentication failed. Check xiaomi.apiKey in settings.`;
+  }
+  try {
+    const parsed = JSON.parse(errorText);
+    if (parsed?.error?.message) {
+      return `Xiaomi TTS error: ${parsed.error.message}`;
+    }
+  } catch {}
   return `Xiaomi TTS request failed with HTTP ${status}${compact ? `: ${compact.slice(0, 160)}` : ""}`;
 }
 

@@ -17,6 +17,7 @@ const { getEffectiveSettings } = require("./settingsStore");
 const { slugify, ensureDir, pathExists } = require("./utils");
 const { classifyError } = require("./errorClassifier");
 const { enrichStoryVocabulary } = require("./vocabularyTools");
+const { writeYouTubeCopy } = require("./youtubeCopy");
 
 const execFileAsync = promisify(execFile);
 
@@ -73,10 +74,11 @@ async function generateStoryWorkflow(options = {}) {
         return await createXiaomiAudio({
           readingItems,
           outputDir,
-          apiKey: settings.xiaomi?.apiKey,
+          apiKey: settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey,
           baseUrl: settings.xiaomi?.baseUrl,
+          ttsBaseUrl: settings.xiaomi?.ttsBaseUrl,
           model: settings.xiaomi?.ttsModel || "MiMo-V2.5-TTS",
-          voice: options.xiaomiVoice || "alloy",
+          voice: options.xiaomiVoice || settings.xiaomi?.voice || "mimo_default",
           speed: Number(options.speed || 1.0),
           requestIntervalMs: options.ttsRequestIntervalMs,
           logs
@@ -186,6 +188,11 @@ async function generateStoryWorkflow(options = {}) {
     const imageProviderName = options.imageMode === "google" ? "Google Imagen" : "MiniMax";
     pushLog(logs, `Generating scene images with ${imageProviderName}`);
     const scenes = getUniqueImageScenes(story);
+    if (isPodcastStory(story)) {
+      await restoreSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
+    } else {
+      await removePodcastHostImages(outputDir, logs);
+    }
     pushLog(logs, `Image API requests: ${scenes.length}; reused across ${story.sections.length} story sections.`);
     const results = options.imageMode === "google"
       ? await generateGoogleImages({
@@ -205,6 +212,9 @@ async function generateStoryWorkflow(options = {}) {
         promptOptimizer: true,
         onProgress: (progress) => reportImageProgress(options, logs, progress)
       });
+    if (isPodcastStory(story)) {
+      await saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
+    }
     return {
       status: "completed",
       counts: {
@@ -254,6 +264,7 @@ async function generateStoryWorkflow(options = {}) {
       musicPath: musicSummary?.musicPath || null,
       musicVolume: Number(options.musicVolume || 0.12),
       imageMode: options.imageMode || "local",
+      videoEncoder: options.videoEncoder || "auto",
       logs
     });
     });
@@ -275,7 +286,9 @@ async function generateStoryWorkflow(options = {}) {
   });
     return report;
   });
+  const youtubeCopy = await writeYouTubeCopy({ outputDir, story, readingItems, qualityReport });
   pushLog(logs, "Quality report ready: quality-report.json");
+  pushLog(logs, "YouTube copy ready: youtube-copy.md");
   pushLog(logs, `Done: ${formatDuration(duration)}`);
 
   return {
@@ -287,6 +300,7 @@ async function generateStoryWorkflow(options = {}) {
     musicSummary,
     videoSummary,
     qualityReport,
+    youtubeCopy,
     files: {
       scriptJson: path.join(outputDir, "script.json"),
       scriptMd: path.join(outputDir, "script.md"),
@@ -295,7 +309,9 @@ async function generateStoryWorkflow(options = {}) {
       audio: options.skipAudio ? null : path.join(outputDir, "audio.wav"),
       music: musicSummary ? path.join(outputDir, "music", "background.mp3") : null,
       video: options.skipAudio ? null : path.join(outputDir, "final.mp4"),
-      qualityReport: path.join(outputDir, "quality-report.json")
+      qualityReport: path.join(outputDir, "quality-report.json"),
+      youtubeCopy: path.join(outputDir, "youtube-copy.md"),
+      youtubeCopyJson: path.join(outputDir, "youtube-copy.json")
     }
   };
 }
@@ -319,8 +335,8 @@ function getPodcastVoiceMap(provider, settings, options) {
   }
   if (provider === "xiaomi") {
     return {
-      "host-a": settings.xiaomi?.podcastHostAVoice || options.xiaomiVoice || "alloy",
-      "host-b": settings.xiaomi?.podcastHostBVoice || "echo"
+      "host-a": settings.xiaomi?.podcastHostAVoice || options.xiaomiVoice || "Mia",
+      "host-b": settings.xiaomi?.podcastHostBVoice || "Milo"
     };
   }
   return {
@@ -402,11 +418,29 @@ async function assertComposeInputs({ outputDir, story, audioSummary, musicSummar
 }
 
 async function findSceneImage(outputDir, sceneId) {
-  const candidates = [".png", ".jpg", ".jpeg", ".webp"].map((ext) => path.join(outputDir, "images", `${sceneId}${ext}`));
+  return findImageInDirectory(path.join(outputDir, "images"), sceneId);
+}
+
+async function findImageInDirectory(imagesDir, sceneId) {
+  const candidates = [".png", ".jpg", ".jpeg", ".webp"].map((ext) => path.join(imagesDir, `${sceneId}${ext}`));
   for (const candidate of candidates) {
     if (await pathExists(candidate)) return candidate;
   }
   return null;
+}
+
+async function removePodcastHostImages(outputDir, logs = []) {
+  const imagesDir = path.join(outputDir, "images");
+  let removed = 0;
+  for (const sceneId of ["podcast-host-a", "podcast-host-b"]) {
+    for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+      const candidate = path.join(imagesDir, `${sceneId}${ext}`);
+      if (!(await pathExists(candidate))) continue;
+      await fs.unlink(candidate);
+      removed += 1;
+    }
+  }
+  if (removed) pushLog(logs, `Removed ${removed} stale podcast host image${removed > 1 ? "s" : ""} from non-podcast output.`);
 }
 
 async function writeQualityReport({ outputDir, story, readingItems, audioSummary, musicSummary, expectedMusicTracks, skipAudio }) {
@@ -419,8 +453,8 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
   const videoDuration = skipAudio ? 0 : await probeDuration(videoPath);
   const warnings = [];
 
-  if (imageCount < 110 || imageCount > 120) {
-    warnings.push(`Image count ${imageCount} is outside the target range of 110-120.`);
+  if (!isPodcastStory(story) && (imageCount < 30 || imageCount > 45)) {
+    warnings.push(`Image count ${imageCount} is outside the target range of 30-45.`);
   }
   if (!skipAudio && audioDuration && Math.abs(audioDuration - subtitleLastTimestamp) > 0.1) {
     warnings.push(`Audio duration and subtitle timeline differ by ${Math.abs(audioDuration - subtitleLastTimestamp).toFixed(3)} seconds.`);
@@ -451,7 +485,7 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
     },
     targets: {
       minutes: 15,
-      images: "110-120",
+      images: isPodcastStory(story) ? "2 podcast host backgrounds" : "30-45",
       musicTracks: expectedMusicTracks
     },
     warnings
@@ -489,15 +523,19 @@ function roundSeconds(value) {
 }
 
 function getUniqueImageScenes(story) {
+  if (isPodcastStory(story)) return buildPodcastHostScenes(story);
+
   const seen = new Map();
   story.sections.forEach((section, index) => {
     const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
     const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
-    const beatCount = Number.isInteger(section.imageBeatCount) ? section.imageBeatCount : 1;
+    const imageBeats = getSectionImageBeats(section);
+    const beatCount = imageBeats.length;
     for (let beatIndex = 0; beatIndex < beatCount; beatIndex += 1) {
       const key = `${baseIndex}:${variantIndex}:${beatIndex}`;
       if (seen.has(key)) continue;
       const moment = getSectionBeatMoment(story, section, beatIndex);
+      const beat = imageBeats[beatIndex] || {};
       seen.set(key, {
         id: buildSceneImageId(baseIndex, variantIndex, beatIndex),
         visual: section.visual,
@@ -506,6 +544,7 @@ function getUniqueImageScenes(story) {
         templateTitle: story.template?.title,
         visualStyle: story.storyboardDesign?.visualStyle || story.outline?.visualStyle,
         moment,
+        durationNote: beat.durationNote || "",
         imagePrompt: buildBeatImagePrompt(story, section, beatIndex)
       });
     }
@@ -515,6 +554,84 @@ function getUniqueImageScenes(story) {
     .map(([, scene]) => scene);
 }
 
+function isPodcastStory(story) {
+  return story?.template?.id === "podcast-dialogue";
+}
+
+function buildPodcastHostScenes(story) {
+  const baseStyle = story.storyboardDesign?.visualStyle
+    || story.outline?.visualStyle
+    || story.template?.visualStyle
+    || "photorealistic premium podcast studio, cinematic warm lighting";
+  const topic = story.title || story.topic || "English learning topic";
+  return [
+    {
+      id: "podcast-host-a",
+      title: topic,
+      contentMode: story.contentMode,
+      templateTitle: story.template?.title || "Podcast Conversation",
+      visualStyle: baseStyle,
+      visual: "Female host in a premium podcast studio, professional microphone, warm key light, soft background, eye-level close-up, natural confident expression.",
+      moment: "Host A speaks as a clear, warm female presenter.",
+      imagePrompt: [
+        "Create one 16:9 photorealistic cinematic podcast video background.",
+        `Topic: ${topic}.`,
+        "Subject: one warm confident female podcast host at a desk microphone.",
+        "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
+        "Composition: host face and microphone visible, enough negative space for captions in the lower third.",
+        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no cartoon."
+      ].join(" ")
+    },
+    {
+      id: "podcast-host-b",
+      title: topic,
+      contentMode: story.contentMode,
+      templateTitle: story.template?.title || "Podcast Conversation",
+      visualStyle: baseStyle,
+      visual: "Male host in a premium podcast studio, professional microphone, warm key light, soft background, eye-level close-up, calm thoughtful expression.",
+      moment: "Host B speaks as a calm, trustworthy male presenter.",
+      imagePrompt: [
+        "Create one 16:9 photorealistic cinematic podcast video background.",
+        `Topic: ${topic}.`,
+        "Subject: one calm trustworthy male podcast host at a desk microphone.",
+        "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
+        "Composition: host face and microphone visible, enough negative space for captions in the lower third.",
+        "Style: realistic film still, natural skin texture, professional lighting, no logos, no subtitles, no watermark, no cartoon."
+      ].join(" ")
+    }
+  ];
+}
+
+async function restoreSharedPodcastImages({ outputRoot, outputDir, scenes, logs }) {
+  const imagesDir = path.join(outputDir, "images");
+  const sharedDir = path.join(outputRoot, "_shared", "podcast-hosts");
+  await ensureDir(imagesDir);
+  let restored = 0;
+  for (const scene of scenes) {
+    if (await findSceneImage(outputDir, scene.id)) continue;
+    const shared = await findImageInDirectory(sharedDir, scene.id);
+    if (!shared) continue;
+    const target = path.join(imagesDir, `${scene.id}${path.extname(shared) || ".png"}`);
+    await fs.copyFile(shared, target);
+    restored += 1;
+  }
+  if (restored) pushLog(logs, `Restored ${restored} shared podcast host image${restored > 1 ? "s" : ""}.`);
+}
+
+async function saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs }) {
+  const sharedDir = path.join(outputRoot, "_shared", "podcast-hosts");
+  await ensureDir(sharedDir);
+  let saved = 0;
+  for (const scene of scenes) {
+    const image = await findSceneImage(outputDir, scene.id);
+    if (!image) continue;
+    const target = path.join(sharedDir, `${scene.id}${path.extname(image) || ".png"}`);
+    await fs.copyFile(image, target);
+    saved += 1;
+  }
+  if (saved) pushLog(logs, `Saved ${saved} podcast host image${saved > 1 ? "s" : ""} for future videos.`);
+}
+
 function buildSceneImageId(baseIndex, variantIndex, beatIndex) {
   const suffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
   return `scene-${String(baseIndex + 1).padStart(3, "0")}-${suffix}-${String(beatIndex + 1).padStart(2, "0")}`;
@@ -522,8 +639,43 @@ function buildSceneImageId(baseIndex, variantIndex, beatIndex) {
 
 function getSectionBeatMoment(story, section, beatIndex) {
   const sentences = section.sentences || [];
+  const beat = getSectionImageBeats(section)[beatIndex];
+  if (beat) {
+    return sentences.slice(beat.sentenceStart, beat.sentenceEnd + 1).join(" ");
+  }
   const beatSize = Number.isInteger(section.imageBeatSize) ? section.imageBeatSize : story.mode === "pure-story" ? 3 : 2;
   return sentences.slice(beatIndex * beatSize, beatIndex * beatSize + beatSize).join(" ");
+}
+
+function getSectionImageBeats(section) {
+  const sentences = section.sentences || [];
+  const sentenceCount = Math.max(1, sentences.length);
+  if (Array.isArray(section.imageBeats) && section.imageBeats.length) {
+    return section.imageBeats
+      .map((beat) => {
+        const start = clampInteger(beat.sentenceStart, 0, sentenceCount - 1);
+        const end = clampInteger(beat.sentenceEnd, start, sentenceCount - 1);
+        return {
+          ...beat,
+          sentenceStart: start,
+          sentenceEnd: Math.max(start, end)
+        };
+      })
+      .sort((a, b) => a.sentenceStart - b.sentenceStart)
+      .slice(0, 2);
+  }
+  return [{
+    sentenceStart: 0,
+    sentenceEnd: sentenceCount - 1,
+    durationNote: "cover the full scene",
+    imagePrompt: section.imagePrompt || ""
+  }];
+}
+
+function clampInteger(value, min, max) {
+  const number = Number(value);
+  const integer = Number.isFinite(number) ? Math.trunc(number) : min;
+  return Math.min(max, Math.max(min, integer));
 }
 
 function buildBeatImagePrompt(story, section, beatIndex) {
@@ -537,10 +689,13 @@ function buildBeatImagePrompt(story, section, beatIndex) {
     story.template?.title ? `Video type: ${story.template.title}.` : "",
     `Overall visual style: ${visualStyle}.`,
     section.imagePrompt ? `Base scene prompt: ${section.imagePrompt}` : "",
+    getSectionImageBeats(section)[beatIndex]?.imagePrompt ? `Beat prompt: ${getSectionImageBeats(section)[beatIndex].imagePrompt}` : "",
     section.visual ? `Scene setting: ${section.visual}` : "",
     moment ? `Exact sentence moment to visualize: ${moment}` : "",
+    isPersonFocusedStory(story) ? "Person-focused mode: keep one consistent public subject when a person is shown. Prefer single-person portraits or contextual object/location shots. Avoid multiple unrelated faces, random crowds, or changing the person's appearance." : "",
     factual ? "Factual documentary mode: show public, realistic, verifiable-feeling environments; avoid fictional private scenes and invented characters." : "",
     podcast ? "Podcast mode: show two hosts in a premium podcast studio, microphones, warm desk lighting, topic-related background screen with no readable text." : "",
+    !podcast ? "Non-podcast mode: do not show podcast hosts, microphones, headphones, recording studios, radio booths, talk-show desks, presenter setups, or interview lighting unless the exact sentence explicitly requires them." : "",
     "Camera direction: realistic documentary photography, 35mm lens look, subtle depth of field, natural perspective, professional lighting, detailed foreground and background.",
     "Composition: one clear focal subject, strong visual story action, clean lower third for subtitles, no clutter over the bottom caption zone.",
     "Image quality: high detail, sharp but natural, cinematic color grade, realistic skin/material texture, no black frames, no abstract gradients.",
@@ -548,6 +703,11 @@ function buildBeatImagePrompt(story, section, beatIndex) {
     `Distinctness: make this beat visually different from nearby beats by changing camera angle, distance, subject pose, object focus, or lighting. Beat ${beatIndex + 1}.`
   ];
   return parts.filter(Boolean).join(" ");
+}
+
+function isPersonFocusedStory(story) {
+  return story?.template?.id === "founder-biography"
+    || /\b(founder|biography|leader|ceo|profile|life of|elon musk|steve jobs|lei jun|bill gates|person)\b/i.test(String(story?.topic || story?.title || ""));
 }
 
 function buildMusicPrompt(story) {
@@ -664,6 +824,7 @@ function pushLog(logs, message) {
 
 module.exports = {
   generateStoryWorkflow,
+  getUniqueImageScenes,
   resolveTtsProvider,
   formatDuration
 };
