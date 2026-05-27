@@ -151,7 +151,7 @@ function renderImagePrompts(story) {
     "",
     "Use these prompts with Codex image generation, MiniMax image-01, or another image API. Recommended size: 1920x1080.",
     `Overall style: ${story.storyboardDesign?.visualStyle || "cinematic storybook illustration"}.`,
-    "Keep a consistent main character across all scenes. Leave the lower half clean because captions are added during video composition.",
+    "Keep a consistent main character across all scenes. Keep the bottom area natural and uncluttered; do not add caption bars or placeholder text.",
     ""
   ];
 

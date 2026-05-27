@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { ensureDir, pathExists } = require("./utils");
 
 async function readJson(file, fallback = null) {
@@ -74,17 +75,32 @@ async function initImageManifest(outputDir, scenes) {
   for (const [index, scene] of scenes.entries()) {
     const prior = previous.get(scene.id) || {};
     const prompt = scene.imagePrompt || scene.visual || "";
-    const promptChanged = Boolean(prior.prompt && prior.prompt !== prompt);
-    const imagePath = promptChanged ? null : prior.imagePath || await findExistingImage(path.join(outputDir, "images"), scene.id);
+    const promptHash = hashPrompt(prompt);
+    const priorPathExists = prior.imagePath ? await pathExists(prior.imagePath) : false;
+    const priorHasTrustedPrompt = prior.promptHash && prior.promptHash === promptHash;
+    const promptChanged = Boolean(
+      (prior.prompt && prior.prompt !== prompt)
+      || (prior.imagePath && !priorHasTrustedPrompt)
+    );
+    const imagePath = promptChanged
+      ? null
+      : (priorHasTrustedPrompt && priorPathExists
+        ? prior.imagePath
+        : priorHasTrustedPrompt
+          ? await findExistingImage(path.join(outputDir, "images"), scene.id)
+          : null);
     items.push({
       sceneId: scene.id,
       index,
       prompt,
+      promptHash,
       promptChanged,
-      status: imagePath ? "completed" : prior.status || "pending",
+      status: imagePath ? "completed" : promptChanged ? "pending" : prior.status === "completed" ? "pending" : prior.status || "pending",
       imagePath: imagePath || null,
       quality: prior.quality || null,
       attempts: Number(prior.attempts || 0),
+      batchSize: prior.batchSize || (scene.hasPeople ? 3 : 1),
+      selectedFrom: prior.selectedFrom || null,
       error: imagePath ? null : promptChanged ? "Prompt changed; cached image will be regenerated." : prior.error || null
     });
   }
@@ -96,6 +112,14 @@ async function initImageManifest(outputDir, scenes) {
   };
   await writeJson(file, manifest);
   return manifest;
+}
+
+function hashPrompt(prompt) {
+  return crypto
+    .createHash("sha256")
+    .update(String(prompt || "").replace(/\s+/g, " ").trim())
+    .digest("hex")
+    .slice(0, 16);
 }
 
 async function updateImageManifest(outputDir, sceneId, patch) {
@@ -164,6 +188,13 @@ async function findExistingImage(imagesDir, sceneId) {
   for (const candidate of candidates) {
     if (await pathExists(candidate)) return candidate;
   }
+  try {
+    const entries = await fs.readdir(imagesDir);
+    const batch = entries
+      .filter((entry) => entry.startsWith(`${sceneId}_batch_`) && /\.(png|jpe?g|webp)$/i.test(entry))
+      .sort()[0];
+    if (batch) return path.join(imagesDir, batch);
+  } catch {}
   return null;
 }
 

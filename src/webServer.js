@@ -475,6 +475,7 @@ async function runStoryJobAsync(job) {
         musicCount: settings.minimax.musicTrackCount || 3,
         musicVolume: 0.12,
         videoEncoder: settings.media?.videoEncoder || "auto",
+        videoOrientation: settings.media?.videoOrientation || "landscape",
         storyMode: "pure-story",
         template,
         storyOutline,
@@ -953,6 +954,7 @@ async function outputPathsForSlug(slug) {
   const musicPath = path.join(OUTPUT_ROOT, slug, "music", "background.mp3");
   return {
     video: await fileExists(path.join(outputDir, "final.mp4")) ? `${base}final.mp4` : null,
+    videoPortrait: await fileExists(path.join(outputDir, "final-portrait.mp4")) ? `${base}final-portrait.mp4` : null,
     script: await fileExists(path.join(outputDir, "script.md")) ? `${base}script.md` : null,
     subtitles: await fileExists(path.join(outputDir, "subtitles.srt")) ? `${base}subtitles.srt` : null,
     audio: await fileExists(path.join(outputDir, "audio.wav")) ? `${base}audio.wav` : null,
@@ -996,15 +998,21 @@ async function rerenderOutputUi(res, slugInput) {
 
   const logs = [];
   const startedAt = new Date().toISOString();
-  const result = await composeStoryVideo({
-    story,
-    readingItems,
-    outputDir,
-    audioPath,
+  const settings = await getEffectiveSettings();
+  const videoEncoder = settings.media?.videoEncoder || "auto";
+
+  // Always generate both landscape and portrait videos
+  const landscapeResult = await composeStoryVideo({
+    story, readingItems, outputDir, audioPath,
     musicPath: await fileExists(musicPath) ? musicPath : null,
-    videoEncoder: (await getEffectiveSettings()).media?.videoEncoder || "auto",
-    logs
+    videoEncoder, orientation: "landscape", logs
   });
+  const portraitResult = await composeStoryVideo({
+    story, readingItems, outputDir, audioPath,
+    musicPath: await fileExists(musicPath) ? musicPath : null,
+    videoEncoder, orientation: "portrait", logs
+  });
+
   const outputs = await outputPathsForSlug(slug);
   return sendJson(res, {
     ok: true,
@@ -1013,7 +1021,7 @@ async function rerenderOutputUi(res, slugInput) {
     completedAt: new Date().toISOString(),
     video: outputs.video,
     outputs,
-    frameCount: result.scenes.length,
+    frameCount: landscapeResult.scenes.length,
     logs
   });
 }
@@ -1044,12 +1052,7 @@ async function regenerateOutputImages(res, slugInput) {
   await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
   await ensureDir(backupDir);
   for (const scene of scenes) {
-    for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
-      const current = path.join(imagesDir, `${scene.id}${ext}`);
-      if (!await fileExists(current)) continue;
-      await fs.copyFile(current, path.join(backupDir, `${scene.id}${ext}`));
-      await fs.unlink(current).catch(() => {});
-    }
+    await moveSceneImagesToBackup(imagesDir, backupDir, scene.id);
   }
 
   logs.push(`[${new Date().toISOString()}] Regenerating ${scenes.length} story beat images with ${imageProvider}.`);
@@ -1098,6 +1101,25 @@ async function regenerateOutputImages(res, slugInput) {
   });
 }
 
+async function moveSceneImagesToBackup(imagesDir, backupDir, sceneId) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(imagesDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const sceneFile = new RegExp(`^${escapeRegExp(sceneId)}(?:_batch_\\d+)?\\.(?:png|jpe?g|webp)$`, "i");
+  for (const entry of entries) {
+    if (!entry.isFile() || !sceneFile.test(entry.name)) continue;
+    await fs.copyFile(path.join(imagesDir, entry.name), path.join(backupDir, entry.name)).catch(() => {});
+    await fs.unlink(path.join(imagesDir, entry.name)).catch(() => {});
+  }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function restoreImageBackup(imagesDir, backupDir) {
   let entries = [];
   try {
@@ -1123,20 +1145,26 @@ async function rerenderOutputUiPayload(slug, logs = []) {
   if (!await fileExists(audioPath)) throw new Error("audio.wav is required for UI-only re-render.");
   const readingItems = Array.isArray(story.readingOrder) ? story.readingOrder : [];
   if (!readingItems.length) throw new Error("script.json has no readingOrder to render.");
-  const result = await composeStoryVideo({
-    story,
-    readingItems,
-    outputDir,
-    audioPath,
+  const settings = await getEffectiveSettings();
+  const videoEncoder = settings.media?.videoEncoder || "auto";
+
+  // Always generate both landscape and portrait videos
+  const landscapeResult = await composeStoryVideo({
+    story, readingItems, outputDir, audioPath,
     musicPath: await fileExists(musicPath) ? musicPath : null,
-    videoEncoder: (await getEffectiveSettings()).media?.videoEncoder || "auto",
-    logs
+    videoEncoder, orientation: "landscape", logs
   });
+  const portraitResult = await composeStoryVideo({
+    story, readingItems, outputDir, audioPath,
+    musicPath: await fileExists(musicPath) ? musicPath : null,
+    videoEncoder, orientation: "portrait", logs
+  });
+
   const outputs = await outputPathsForSlug(slug);
   return {
     video: outputs.video,
     outputs,
-    frameCount: result.scenes.length,
+    frameCount: landscapeResult.scenes.length,
     logs
   };
 }

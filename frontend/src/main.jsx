@@ -460,7 +460,7 @@ function getActiveConfigBadges(config) {
       `TTS: ${formatTtsConfig(config, settings)}`,
       `Image: ${formatImageConfig(config, settings)}`,
       `Music: ${settings.models?.music || "music-2.6"}`,
-      `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}`,
+      `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}${settings.media?.videoOrientation === "portrait" ? " · Portrait" : ""}`,
       "Search: Tavily"
     ];
   }
@@ -470,7 +470,7 @@ function getActiveConfigBadges(config) {
     `TTS: ${formatTtsConfig(config, settings)}`,
     `Image: ${formatImageConfig(config, settings)}`,
     `Music: ${settings.models?.music || "music-2.6"}`,
-    `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}`,
+    `Video: ${formatVideoEncoder(settings.media?.videoEncoder)}${settings.media?.videoOrientation === "portrait" ? " · Portrait" : ""}`,
     "Search: Tavily"
   ];
 }
@@ -756,11 +756,9 @@ function PreviewPage({ output }) {
 
   return (
     <section className="glass-card content-panel preview-panel">
+      <p className="section-kicker">Preview</p>
       <div className="panel-title-row">
-        <div>
-          <p className="section-kicker">Preview</p>
-          <h2>{output?.title || "No video selected"}</h2>
-        </div>
+        <h2>{output?.title || "No video selected"}</h2>
         {output?.outputs?.video && (
           <div className="title-actions">
             <button className="ghost-action" type="button" onClick={handleRerenderUi}>
@@ -769,6 +767,11 @@ function PreviewPage({ output }) {
             <a className="ghost-action download-btn" href={output.outputs.video} download={`${output.title || "video"}.mp4`}>
               Download
             </a>
+            {output.outputs.videoPortrait && (
+              <a className="ghost-action download-btn" href={output.outputs.videoPortrait} download={`${output.title || "video"}-portrait.mp4`}>
+                Portrait
+              </a>
+            )}
           </div>
         )}
       </div>
@@ -946,8 +949,10 @@ function VideoPlayer({ src, title, cacheKey = 0 }) {
 
   const ratio = duration ? (time / duration) * 100 : 0;
 
+  const isPortrait = src?.includes("portrait");
+
   return (
-    <div className="video-stage">
+    <div className={`video-stage${isPortrait ? " portrait" : ""}`}>
       <video
         ref={videoRef}
         src={cacheKey ? `${src}?ui=${cacheKey}` : src}
@@ -1169,7 +1174,8 @@ function SettingsPage({ onSaved }) {
     media: {
       ttsProvider: "minimax",
       imageProvider: "minimax",
-      videoEncoder: "auto"
+      videoEncoder: "auto",
+      videoOrientation: "landscape"
     },
     xiaomiApiKey: "",
     xiaomiTtsApiKey: "",
@@ -1218,7 +1224,8 @@ function SettingsPage({ onSaved }) {
       media: {
         ttsProvider: next.media?.ttsProvider || "minimax",
         imageProvider: next.media?.imageProvider || "minimax",
-        videoEncoder: next.media?.videoEncoder || "auto"
+        videoEncoder: next.media?.videoEncoder || "auto",
+        videoOrientation: next.media?.videoOrientation || "landscape"
       },
       xiaomiBaseUrl: next.xiaomi?.baseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
       xiaomiTtsBaseUrl: next.xiaomi?.ttsBaseUrl || "https://token-plan-sgp.xiaomimimo.com/v1",
@@ -1647,7 +1654,7 @@ function SettingsPage({ onSaved }) {
               {settingsType === "text" && `Script engine: ${form.provider === "xiaomi" ? "Xiaomi MiMo" : "Fallback LLM"}.`}
               {settingsType === "tts" && `Voice engine: ${form.media.ttsProvider}.`}
               {settingsType === "image" && `Scene image engine: ${form.media.imageProvider}.`}
-              {settingsType === "video" && `MP4 encoder: ${formatVideoEncoder(form.media.videoEncoder)}.`}
+              {settingsType === "video" && `MP4 encoder: ${formatVideoEncoder(form.media.videoEncoder)}. Orientation: ${form.media.videoOrientation === "portrait" ? "Portrait (9:16)" : "Landscape (16:9)"}.`}
               {settingsType === "music" && "Background music currently uses MiniMax."}
               {settingsType === "search" && "Search grounding currently uses Tavily."}
             </span>
@@ -1825,6 +1832,13 @@ function SettingsPage({ onSaved }) {
                 <label>
                   Encoder Notes
                   <input value="Hardware encoding accelerates Compose MP4 only. API image/TTS/music calls are unchanged." readOnly />
+                </label>
+                <label>
+                  Video Orientation
+                  <select value={form.media.videoOrientation || "landscape"} onChange={(event) => setForm({ ...form, media: { ...form.media, videoOrientation: event.target.value } })}>
+                    <option value="landscape">Landscape (16:9) — Desktop / YouTube</option>
+                    <option value="portrait">Portrait (9:16) — Mobile / TikTok / Reels</option>
+                  </select>
                 </label>
               </>
             )}

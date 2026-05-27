@@ -257,18 +257,29 @@ async function generateStoryWorkflow(options = {}) {
   if (!options.skipAudio) {
     videoSummary = await runStage(options, "compose", async () => {
     await assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options });
-    pushLog(logs, "Composing final MP4");
-    return await composeStoryVideo({
-      story,
-      readingItems,
-      outputDir,
+    pushLog(logs, "Composing final MP4 (landscape + portrait)");
+
+    const composeBase = {
+      story, readingItems, outputDir,
       audioPath: audioSummary.audioPath,
       musicPath: musicSummary?.musicPath || null,
       musicVolume: Number(options.musicVolume || 0.12),
       imageMode: options.imageMode || "local",
       videoEncoder: options.videoEncoder || "auto",
       logs
+    };
+
+    // Always generate landscape video
+    const landscapeResult = await composeStoryVideo({
+      ...composeBase, orientation: "landscape"
     });
+
+    // Always generate portrait video
+    const portraitResult = await composeStoryVideo({
+      ...composeBase, orientation: "portrait"
+    });
+
+    return landscapeResult;
     });
   } else {
     await notifyStage(options, "compose", "skipped", { counts: { completed: 0, total: 0 } });

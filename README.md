@@ -59,6 +59,7 @@ outputs/{slug}/
   music/
   slides/
   final.mp4
+  final-portrait.mp4
   job-state.json
 ```
 
@@ -321,6 +322,26 @@ Generated videos include:
 - Podcast mode with two-host visual layout, two voice roles, and dialogue captions.
 
 Use Preview -> Re-render Video UI to regenerate only slides and MP4 from existing script/audio/images/music. This does not call LLM, TTS, image, or music APIs.
+
+## Portrait Video Mode (9:16)
+
+EchoEnglish supports portrait/vertical video for mobile platforms (TikTok, Instagram Reels, YouTube Shorts). Every generation or Re-render automatically produces both landscape and portrait videos:
+
+- `final.mp4` — 1920x1080 (16:9 landscape)
+- `final-portrait.mp4` — 1080x1920 (9:16 portrait)
+
+Portrait mode reuses the same landscape (16:9) scene images — images are center-cropped (`xMidYMid slice`) to fill the portrait canvas without regenerating.
+
+Layout adjustments in portrait mode:
+
+- Title cover panel is vertically centered with a narrower play button area.
+- Vocabulary review uses 2 columns instead of 3.
+- Vocabulary overlay moves to top-center instead of top-right.
+- Podcast host cards are centered and narrower.
+- Caption area is wider (88% of canvas width) with adjusted text wrapping.
+- Fallback scene illustrations scale proportionally.
+
+The Preview page shows both videos and provides separate download buttons for landscape and portrait.
 
 ## Hardware Video Encoding
 

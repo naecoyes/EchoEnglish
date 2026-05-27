@@ -72,7 +72,8 @@ const DEFAULT_GOOGLE = {
 const DEFAULT_MEDIA = {
   ttsProvider: "minimax",
   imageProvider: "minimax",
-  videoEncoder: "auto"
+  videoEncoder: "auto",
+  videoOrientation: "landscape"
 };
 
 const DEFAULT_PROFILE_ID = "balanced";
@@ -559,7 +560,8 @@ function normalizeSettings(settings = {}) {
     media: {
       ttsProvider: normalizeProvider(settings.media?.ttsProvider, DEFAULT_MEDIA.ttsProvider, ["minimax", "xiaomi", "google"]),
       imageProvider: normalizeProvider(settings.media?.imageProvider, DEFAULT_MEDIA.imageProvider, ["minimax", "google"]),
-      videoEncoder: normalizeProvider(settings.media?.videoEncoder, DEFAULT_MEDIA.videoEncoder, ["auto", "cpu-libx264", "apple-videotoolbox", "nvidia-nvenc", "intel-qsv"])
+      videoEncoder: normalizeProvider(settings.media?.videoEncoder, DEFAULT_MEDIA.videoEncoder, ["auto", "cpu-libx264", "apple-videotoolbox", "nvidia-nvenc", "intel-qsv"]),
+      videoOrientation: normalizeProvider(settings.media?.videoOrientation, DEFAULT_MEDIA.videoOrientation, ["landscape", "portrait"])
     },
     models: {
       text: textModel,

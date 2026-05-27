@@ -17,8 +17,9 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, ttsBaseUr
   await assertCommand("ffmpeg", ["-version"]);
   await assertCommand("ffprobe", ["-version"]);
 
-  const apiUrl = `${(ttsBaseUrl || baseUrl || "https://api.mimo-v2.com/v1").replace(/\/$/, "")}/audio/speech`;
   const apiModel = normalizeTtsModel(model);
+  const apiBaseUrl = (ttsBaseUrl || baseUrl || "https://api.xiaomimimo.com/v1").replace(/\/$/, "");
+  const apiUrl = `${apiBaseUrl}/${usesChatCompletions(apiModel) ? "chat/completions" : "audio/speech"}`;
   const workDir = path.join(outputDir, "audio-work");
   await ensureDir(workDir);
   const cacheDir = path.join(path.dirname(outputDir), ".tts-cache");
@@ -159,10 +160,15 @@ function createCacheKey({ model, voice, text, speed }) {
 }
 
 function normalizeTtsModel(model) {
-  const value = String(model || "MiMo-V2.5-TTS").trim();
+  const value = String(model || "mimo-v2.5-tts").trim();
   const lower = value.toLowerCase();
-  if (lower === "mimo-v2.5-tts" || lower === "mimo-v2-tts") return "mimo-v2-tts";
+  if (lower === "mimo-v2.5-tts") return "mimo-v2.5-tts";
+  if (lower === "mimo-v2-tts") return "mimo-v2-tts";
   return lower;
+}
+
+function usesChatCompletions(model) {
+  return String(model || "").toLowerCase() === "mimo-v2.5-tts";
 }
 
 async function waitForRequestSlot(lastRequestAt, minimumRequestIntervalMs) {
@@ -173,6 +179,10 @@ async function waitForRequestSlot(lastRequestAt, minimumRequestIntervalMs) {
 }
 
 async function synthesizeXiaomi({ apiUrl, apiKey, model, voice, text, speed }) {
+  if (usesChatCompletions(model)) {
+    return synthesizeXiaomiChat({ apiUrl, apiKey, model, voice, text });
+  }
+
   const body = {
     model,
     input: text,
@@ -184,11 +194,44 @@ async function synthesizeXiaomi({ apiUrl, apiKey, model, voice, text, speed }) {
   return await fetchWithRetry(apiUrl, {
     method: "POST",
     headers: {
+      "api-key": apiKey,
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
   });
+}
+
+async function synthesizeXiaomiChat({ apiUrl, apiKey, model, voice, text }) {
+  const body = {
+    model,
+    messages: [
+      {
+        role: "assistant",
+        content: text
+      }
+    ],
+    modalities: ["text", "audio"],
+    audio: {
+      voice: voice || "Mia",
+      format: "wav"
+    }
+  };
+
+  const payload = await fetchJsonWithRetry(apiUrl, {
+    method: "POST",
+    headers: {
+      "api-key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const audioData = payload?.choices?.[0]?.message?.audio?.data || payload?.audio?.data || payload?.data;
+  if (!audioData) {
+    throw new Error("Xiaomi TTS response did not include audio data.");
+  }
+  return Buffer.from(audioData, "base64");
 }
 
 async function fetchWithRetry(url, options) {
@@ -214,6 +257,28 @@ async function fetchWithRetry(url, options) {
     await delay(1500 * (attempt + 1));
   }
 
+  throw lastError;
+}
+
+async function fetchJsonWithRetry(url, options) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text().catch(() => "");
+      const payload = text ? JSON.parse(text) : null;
+      if (response.status === 429 || response.status >= 500) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      if (!response.ok) {
+        throw new Error(formatXiaomiTtsError(response.status, text, url));
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(1500 * (attempt + 1));
+  }
   throw lastError;
 }
 

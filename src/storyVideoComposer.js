@@ -4,17 +4,26 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { createRequire } = require("node:module");
 const { ensureDir, pathExists } = require("./utils");
+const { inspectImage } = require("./imageQuality");
 
 const execFileAsync = promisify(execFile);
 const { runFfmpeg } = require("./ffmpegGateway");
-const WIDTH = 1920;
-const HEIGHT = 1080;
-const CAPTION_Y = 760;
-const CAPTION_H = 250;
 let cachedFfmpegEncoders = null;
 
-async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto" }) {
+function getLayout(orientation) {
+  const isPortrait = orientation === "portrait";
+  const W = isPortrait ? 1080 : 1920;
+  const H = isPortrait ? 1920 : 1080;
+  const CAPTION_Y = Math.round(H * (isPortrait ? 0.73 : 0.70));
+  const CAPTION_H = isPortrait ? 320 : 250;
+  const CAPTION_W = Math.round(W * (isPortrait ? 0.88 : 0.84));
+  const CAPTION_X = Math.round((W - CAPTION_W) / 2);
+  return { isPortrait, W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X };
+}
+
+async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto", orientation = "landscape" }) {
   await assertCommand("ffmpeg", ["-version"]);
+  const layout = getLayout(orientation);
   const slidesDir = path.join(outputDir, "slides");
   await ensureDir(slidesDir);
 
@@ -30,7 +39,7 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
 
     const existingImage = await findExistingSceneImage(outputDir, story, frame);
     const imageDataUri = existingImage ? await imageToDataUri(existingImage) : null;
-    const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri });
+    const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri, layout });
     await sharp(Buffer.from(svg)).png().toFile(path.join(slidesDir, `${frame.id}.png`));
   }
 
@@ -47,7 +56,8 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
   lines.push(`file '${escapeConcatPath(path.join(slidesDir, `${lastFrame.id}.png`))}'`);
   await fs.writeFile(concatPath, lines.join("\n"));
 
-  const videoPath = path.join(outputDir, "final.mp4");
+  const videoFilename = orientation === "portrait" ? "final-portrait.mp4" : "final.mp4";
+  const videoPath = path.join(outputDir, videoFilename);
   const ffmpegArgs = [
     "-y",
     "-hide_banner",
@@ -333,28 +343,56 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
   const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
   const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
   const variantSuffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
+  const sceneBase = `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}`;
+  const imagesDir = path.join(outputDir, "images");
+
   const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
-  const beatBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}-${String(beatIndex + 1).padStart(2, "0")}`);
-  const variantBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}`);
-  const legacyBase = path.join(outputDir, "images", `scene-${String(baseIndex + 1).padStart(3, "0")}`);
+  const beatSceneId = `${sceneBase}-${String(beatIndex + 1).padStart(2, "0")}`;
+  const beatBatchImages = await findBatchImages(imagesDir, beatSceneId);
+  if (beatBatchImages.length > 0) {
+    return beatBatchImages[0];
+  }
+
+  const sceneBatchImages = await findBatchImages(imagesDir, sceneBase);
+  if (sceneBatchImages.length > 0) {
+    const sentences = section.sentences || [];
+    const sentenceCount = Math.max(1, sentences.length);
+    const batchIndex = Math.floor((frameSentenceIndex / sentenceCount) * sceneBatchImages.length);
+    return sceneBatchImages[Math.min(batchIndex, sceneBatchImages.length - 1)];
+  }
+
+  const beatBase = path.join(imagesDir, beatSceneId);
+  const variantBase = path.join(imagesDir, sceneBase);
+  const legacyBase = path.join(imagesDir, `scene-${String(baseIndex + 1).padStart(3, "0")}`);
   const candidates = [
-    `${beatBase}.png`,
-    `${beatBase}.jpg`,
-    `${beatBase}.jpeg`,
-    `${beatBase}.webp`,
-    `${variantBase}.png`,
-    `${variantBase}.jpg`,
-    `${variantBase}.jpeg`,
-    `${variantBase}.webp`,
-    `${legacyBase}.png`,
-    `${legacyBase}.jpg`,
-    `${legacyBase}.jpeg`,
-    `${legacyBase}.webp`
+    `${beatBase}.png`, `${beatBase}.jpg`, `${beatBase}.jpeg`, `${beatBase}.webp`,
+    `${variantBase}.png`, `${variantBase}.jpg`, `${variantBase}.jpeg`, `${variantBase}.webp`,
+    `${legacyBase}.png`, `${legacyBase}.jpg`, `${legacyBase}.jpeg`, `${legacyBase}.webp`
   ];
   for (const candidate of candidates) {
     if (await pathExists(candidate)) return candidate;
   }
   return null;
+}
+
+async function findBatchImages(imagesDir, sceneBase) {
+  const prefix = `${sceneBase}_batch_`;
+  try {
+    const entries = await fs.readdir(imagesDir);
+    const batchFiles = entries
+      .filter((e) => e.startsWith(prefix))
+      .sort();
+    const cleanResults = [];
+    for (const file of batchFiles) {
+      const fullPath = path.join(imagesDir, file);
+      if (!await pathExists(fullPath)) continue;
+      const quality = await inspectImage(fullPath).catch(() => null);
+      if (quality?.ok) cleanResults.push(fullPath);
+    }
+    return cleanResults.length ? cleanResults : [];
+  } catch {
+    return [];
+  }
 }
 
 function getImageBeatIndexForSentence(section, sentenceIndex = 0, story = null) {
@@ -406,14 +444,16 @@ async function findImageBySceneId(outputDir, sceneId) {
   return null;
 }
 
-function renderLearningFrame({ story, frame, frameIndex, imageDataUri }) {
+function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout }) {
+  const { W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X } = layout;
   const palette = getPalette(frameIndex);
+  const pad = Math.round(W * 0.04);
   const imageLayer = imageDataUri
-    ? `<image href="${imageDataUri}" x="0" y="0" width="${WIDTH}" height="${HEIGHT}" preserveAspectRatio="xMidYMid slice"/>`
-    : renderFallbackImage(frame, palette);
+    ? `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`
+    : renderFallbackImage(frame, palette, layout);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <defs>
     <linearGradient id="captionPanel" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#082f3f"/>
@@ -439,6 +479,11 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri }) {
       <stop offset="0%" stop-color="#eef7ff" stop-opacity="0.92"/>
       <stop offset="100%" stop-color="#dbeafe" stop-opacity="0.72"/>
     </linearGradient>
+    <linearGradient id="bottomCleanGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020817" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#020817" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#020817" stop-opacity="0.92"/>
+    </linearGradient>
     <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#000000" flood-opacity="0.28"/>
     </filter>
@@ -447,43 +492,50 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri }) {
       <feDropShadow dx="0" dy="-3" stdDeviation="4" flood-color="#ffffff" flood-opacity="0.46"/>
     </filter>
   </defs>
-  <rect width="${WIDTH}" height="${HEIGHT}" fill="#061329"/>
+  <rect width="${W}" height="${H}" fill="#061329"/>
   ${imageLayer}
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#000" opacity="0.16"/>
-  ${frame.kind === "cover" ? renderCoverOverlay(story, frame) : ""}
-  ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame) : ""}
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.16"/>
+  ${frame.kind !== "cover" && frame.kind !== "vocab-review" ? `<rect x="0" y="${Math.round(H * 0.838)}" width="${W}" height="${Math.round(H * 0.162)}" fill="url(#bottomCleanGradient)"/>` : ""}
+  ${frame.kind === "cover" ? renderCoverOverlay(story, frame, layout) : ""}
+  ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame, layout) : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
-  ${renderPodcastHosts(frame)}
-  ${frame.vocabWord ? renderVocabularyOverlay(frame, { podcast: true }) : ""}
-  ${renderPodcastCaption(frame)}` : ""}
+  ${renderPodcastHosts(frame, layout)}
+  ${frame.vocabWord ? renderVocabularyOverlay(frame, { podcast: true, layout }) : ""}
+  ${renderPodcastCaption(frame, layout)}` : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
-  ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame) : ""}
-  <rect x="150" y="${CAPTION_Y}" width="1620" height="${CAPTION_H}" rx="34" fill="#04111f" opacity="0.61"/>
-  <rect x="150" y="${CAPTION_Y}" width="1620" height="${CAPTION_H}" rx="34" fill="none" stroke="#93c5fd" stroke-width="2.5" opacity="0.52"/>
-  <rect x="154" y="${CAPTION_Y + 4}" width="1612" height="${CAPTION_H - 8}" rx="30" fill="none" stroke="#ffffff" stroke-width="1.3" opacity="0.18"/>
-  ${renderBottomText(frame)}` : ""}
+  ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame, { layout }) : ""}
+  <rect x="${CAPTION_X}" y="${CAPTION_Y}" width="${CAPTION_W}" height="${CAPTION_H}" rx="34" fill="#04111f" opacity="0.61"/>
+  <rect x="${CAPTION_X}" y="${CAPTION_Y}" width="${CAPTION_W}" height="${CAPTION_H}" rx="34" fill="none" stroke="#93c5fd" stroke-width="2.5" opacity="0.52"/>
+  <rect x="${CAPTION_X + 4}" y="${CAPTION_Y + 4}" width="${CAPTION_W - 8}" height="${CAPTION_H - 8}" rx="30" fill="none" stroke="#ffffff" stroke-width="1.3" opacity="0.18"/>
+  ${renderBottomText(frame, layout)}` : ""}
 </svg>`;
 }
 
-function renderPodcastHosts(frame) {
+function renderPodcastHosts(frame, layout) {
+  const { W } = layout;
   const activeA = frame.speaker !== "host-b";
   const activeB = frame.speaker === "host-b";
+  const cardW = Math.round(W * 0.219);
+  const gap = Math.round(W * 0.05);
+  const totalW = cardW * 2 + gap;
+  const leftX = Math.round((W - totalW) / 2);
+  const rightX = leftX + cardW + gap;
   return `
-  ${renderPodcastHostCard({ x: 112, y: 96, side: "left", label: "Host A", active: activeA })}
-  ${renderPodcastHostCard({ x: 1388, y: 96, side: "right", label: "Host B", active: activeB })}`;
+  ${renderPodcastHostCard({ x: leftX, y: 96, width: cardW, side: "left", label: "Host A", active: activeA })}
+  ${renderPodcastHostCard({ x: rightX, y: 96, width: cardW, side: "right", label: "Host B", active: activeB })}`;
 }
 
-function renderPodcastHostCard({ x, y, side, label, active }) {
-  const width = 420;
-  const avatarX = x + (side === "left" ? 78 : 342);
-  const micX = x + (side === "left" ? 205 : 158);
-  const labelX = x + (side === "left" ? 78 : 342);
+function renderPodcastHostCard({ x, y, width, side, label, active }) {
+  const w = width || 420;
+  const avatarX = x + (side === "left" ? Math.round(w * 0.186) : Math.round(w * 0.814));
+  const micX = x + (side === "left" ? Math.round(w * 0.488) : Math.round(w * 0.376));
+  const labelX = avatarX;
   const accent = active ? "#0b84ff" : "#94a3b8";
   const opacity = active ? 0.58 : 0.34;
   return `
   <g opacity="${opacity}">
-    <rect x="${x}" y="${y}" width="${width}" height="178" rx="30" fill="#061527" opacity="0.36"/>
-    <rect x="${x}" y="${y}" width="${width}" height="178" rx="30" fill="none" stroke="${accent}" stroke-width="${active ? 2.2 : 1.3}" opacity="0.46"/>
+    <rect x="${x}" y="${y}" width="${w}" height="178" rx="30" fill="#061527" opacity="0.36"/>
+    <rect x="${x}" y="${y}" width="${w}" height="178" rx="30" fill="none" stroke="${accent}" stroke-width="${active ? 2.2 : 1.3}" opacity="0.46"/>
     <circle cx="${avatarX}" cy="${y + 72}" r="40" fill="${accent}" opacity="0.9"/>
     <circle cx="${avatarX}" cy="${y + 58}" r="17" fill="#eaf5ff"/>
     <path d="M${avatarX - 33} ${y + 116} C${avatarX - 22} ${y + 88} ${avatarX + 22} ${y + 88} ${avatarX + 33} ${y + 116} Z" fill="#eaf5ff"/>
@@ -494,25 +546,31 @@ function renderPodcastHostCard({ x, y, side, label, active }) {
   </g>`;
 }
 
-function renderPodcastCaption(frame) {
+function renderPodcastCaption(frame, layout) {
+  const { W, H } = layout;
   const isHostB = frame.speaker === "host-b";
-  const captionY = 704;
-  const captionH = 230;
-  const x = 230;
-  const speakerX = isHostB ? 1548 : 372;
-  const textX = 960;
+  const captionY = Math.round(H * 0.652);
+  const captionH = Math.round(H * 0.213);
+  const captionW = Math.round(W * 0.76);
+  const x = Math.round((W - captionW) / 2);
+  const textX = Math.round(W / 2);
   const label = frame.speakerName || (isHostB ? "Host B" : "Host A");
+  const badgeW = Math.round(W * 0.163);
+  const badgeX = isHostB ? x + captionW - badgeW - Math.round(W * 0.025) : x + Math.round(W * 0.025);
+  const speakerX = badgeX + Math.round(badgeW / 2);
   return `
-  <rect x="${x}" y="${captionY}" width="1460" height="${captionH}" rx="34" fill="#04111f" opacity="0.62"/>
-  <rect x="${x}" y="${captionY}" width="1460" height="${captionH}" rx="34" fill="none" stroke="${isHostB ? "#f59e0b" : "#38bdf8"}" stroke-width="2.6" opacity="0.68"/>
-  <rect x="${isHostB ? 1392 : 258}" y="${captionY + 26}" width="312" height="52" rx="26" fill="${isHostB ? "#f59e0b" : "#0b84ff"}" opacity="0.94"/>
+  <rect x="${x}" y="${captionY}" width="${captionW}" height="${captionH}" rx="34" fill="#04111f" opacity="0.62"/>
+  <rect x="${x}" y="${captionY}" width="${captionW}" height="${captionH}" rx="34" fill="none" stroke="${isHostB ? "#f59e0b" : "#38bdf8"}" stroke-width="2.6" opacity="0.68"/>
+  <rect x="${badgeX}" y="${captionY + 26}" width="${badgeW}" height="52" rx="26" fill="${isHostB ? "#f59e0b" : "#0b84ff"}" opacity="0.94"/>
   <text x="${speakerX}" y="${captionY + 62}" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="900" fill="#ffffff">${escapeXml(label)}</text>
-  ${renderPodcastBottomText(frame, textX, captionY, captionH)}`;
+  ${renderPodcastBottomText(frame, textX, captionY, captionH, layout)}`;
 }
 
-function renderPodcastBottomText(frame, textX, captionY, captionH) {
-  const englishLines = wrapWords(frame.english || "", 46).slice(0, 2);
-  const chineseLines = wrapMixed(frame.chinese || "", 42).slice(0, 2);
+function renderPodcastBottomText(frame, textX, captionY, captionH, layout) {
+  const wrapLen = layout?.isPortrait ? 36 : 46;
+  const chineseWrapLen = layout?.isPortrait ? 32 : 42;
+  const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 2);
+  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
   const englishFont = englishLines.length > 1 ? 42 : 46;
   const chineseFont = chineseLines.length > 1 ? 27 : 29;
   const englishY = captionY + 118;
@@ -522,50 +580,85 @@ function renderPodcastBottomText(frame, textX, captionY, captionH) {
   ${chineseLines.map((line, index) => `<text x="${textX}" y="${chineseY + index * 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.84" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
 }
 
-function renderCoverOverlay(story, frame) {
-  const titleLines = wrapWords(story.title || frame.title || "English Story", 24).slice(0, 3);
+function renderCoverOverlay(story, frame, layout) {
+  const { W, H } = layout;
+  const titleLines = wrapWords(story.title || frame.title || "English Story", 20).slice(0, 3);
+  const titleFont = titleLines.length > 1 ? 58 : 66;
   const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", 50).slice(0, 2);
   const gradeLevel = estimateUsGradeLevel(story);
+  const lx = Math.round(W * 0.13);
+  const panelW = Math.round(W * 0.875);
+  const panelX = Math.round(W * 0.0625);
+  const panelH = Math.round(H * 0.72);
+  const panelY = Math.round(H * 0.139);
+  const innerPad = Math.round(W * 0.017);
+  const titleWrap = layout.isPortrait ? 16 : 20;
+  const titleLinesP = wrapWords(story.title || frame.title || "English Story", titleWrap).slice(0, 3);
+  const titleFontP = titleLinesP.length > 1 ? (layout.isPortrait ? 48 : 58) : (layout.isPortrait ? 54 : 66);
+  const summaryWrap = layout.isPortrait ? 36 : 50;
+  const summaryLinesP = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", summaryWrap).slice(0, 2);
+  const pbx = Math.round(W * 0.56);
+  const pbw = Math.round(W * 0.17);
+  const pbh = layout.isPortrait ? Math.round(W * 0.24) : 260;
+  const pby = layout.isPortrait ? Math.round(H * 0.28) : 300;
+  const pbCx = pbx + Math.round(pbw / 2);
+  const triY1 = pby + Math.round(pbh * 0.32);
+  const triY2 = pby + Math.round(pbh * 0.62);
+  const triX1 = pbCx - Math.round(pbw * 0.18);
+  const triX2 = pbCx + Math.round(pbw * 0.18);
+  const triX3 = pbCx + Math.round(pbw * 0.32);
+  const listenY = pby + pbh + Math.round(H * 0.038);
+  const listenSubY = listenY + Math.round(H * 0.04);
+  const practiceY = layout.isPortrait ? Math.round(H * 0.58) : 670;
+  const summaryStartY = practiceY + Math.round(H * 0.045);
+  const diffY = summaryStartY + summaryLinesP.length * Math.round(H * 0.032) + Math.round(H * 0.018);
+  const diffZhY = diffY + Math.round(H * 0.035);
   return `
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#020817" opacity="0.42"/>
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#04111f" opacity="0.2"/>
-  <rect x="80" y="110" width="1760" height="860" rx="58" fill="#020817" opacity="0.34"/>
-  <rect x="120" y="150" width="1680" height="780" rx="54" fill="url(#coverPanel)" opacity="0.88"/>
-  <rect x="120" y="150" width="1680" height="780" rx="54" fill="#ffffff" opacity="0.14"/>
-  <rect x="152" y="182" width="1616" height="716" rx="42" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.25"/>
-  <rect x="250" y="235" width="330" height="58" rx="29" fill="#0b84ff" opacity="0.95"/>
-  <text x="415" y="274" text-anchor="middle" font-family="Arial, sans-serif" font-size="27" font-weight="900" letter-spacing="4" fill="#ffffff">ECHOENGLISH</text>
-  <text x="250" y="365" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="52" font-weight="900" fill="#0f172a">今天的故事</text>
-  ${titleLines.map((line, index) => `<text x="250" y="${470 + index * 82}" font-family="Arial, sans-serif" font-size="74" font-weight="950" fill="#071126">${escapeXml(line)}</text>`).join("\n  ")}
-  <rect x="1250" y="300" width="260" height="260" rx="64" fill="#0b84ff" opacity="0.92"/>
-  <polygon points="1346,384 1346,476 1428,430" fill="#ffffff" opacity="0.96"/>
-  <text x="1380" y="622" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="950" fill="#0f172a">Listen &amp; Shadow</text>
-  <text x="1380" y="665" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="850" fill="#1d4ed8">边听边读 · 口语跟读</text>
-  <text x="250" y="720" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
-  ${summaryLines.map((line, index) => `<text x="250" y="${768 + index * 34}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
-  <text x="250" y="838" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
-  <text x="250" y="876" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#020817" opacity="0.42"/>
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#04111f" opacity="0.2"/>
+  <rect x="${Math.round(W * 0.042)}" y="${Math.round(H * 0.102)}" width="${panelW}" height="${panelH}" rx="58" fill="#020817" opacity="0.34"/>
+  <rect x="${panelX}" y="${panelY}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 2}" rx="54" fill="url(#coverPanel)" opacity="0.88"/>
+  <rect x="${panelX}" y="${panelY}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 2}" rx="54" fill="#ffffff" opacity="0.14"/>
+  <rect x="${panelX + innerPad}" y="${panelY + innerPad * 1.5}" width="${panelW - innerPad * 4}" height="${panelH - innerPad * 5}" rx="42" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.25"/>
+  <rect x="${lx}" y="${Math.round(H * 0.218)}" width="${Math.round(W * 0.172)}" height="58" rx="29" fill="#0b84ff" opacity="0.95"/>
+  <text x="${lx + Math.round(W * 0.086)}" y="${Math.round(H * 0.254)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="27" font-weight="900" letter-spacing="4" fill="#ffffff">ECHOENGLISH</text>
+  <text x="${lx}" y="${Math.round(H * 0.329)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="48" font-weight="900" fill="#0f172a">今天的故事</text>
+  ${titleLinesP.map((line, index) => `<text x="${lx}" y="${Math.round(H * 0.421) + index * Math.round(H * 0.065)}" font-family="Arial, sans-serif" font-size="${titleFontP}" font-weight="950" fill="#071126">${escapeXml(line)}</text>`).join("\n  ")}
+  <rect x="${pbx}" y="${pby}" width="${pbw}" height="${pbh}" rx="64" fill="#0b84ff" opacity="0.92"/>
+  <polygon points="${triX1},${triY1} ${triX1},${triY2} ${triX3},${Math.round((triY1 + triY2) / 2)}" fill="#ffffff" opacity="0.96"/>
+  <text x="${pbCx}" y="${listenY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="950" fill="#0f172a">Listen &amp; Shadow</text>
+  <text x="${pbCx}" y="${listenSubY}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="850" fill="#1d4ed8">边听边读 · 口语跟读</text>
+  <text x="${lx}" y="${practiceY}" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
+  ${summaryLinesP.map((line, index) => `<text x="${lx}" y="${summaryStartY + index * Math.round(H * 0.032)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
+  <text x="${lx}" y="${diffY}" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
+  <text x="${lx}" y="${diffZhY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
 }
 
-function renderVocabularyReviewOverlay(frame) {
+function renderVocabularyReviewOverlay(frame, layout) {
+  const { W, H } = layout;
   const vocabulary = Array.isArray(frame.vocabulary) ? frame.vocabulary.slice(0, 54) : [];
-  const columns = 3;
+  const columns = layout.isPortrait ? 2 : 3;
   const rowsPerColumn = Math.max(1, Math.ceil(vocabulary.length / columns));
-  const columnWidth = 520;
-  const startX = 190;
-  const startY = 276;
+  const columnWidth = layout.isPortrait ? Math.round(W * 0.42) : 560;
+  const startX = layout.isPortrait ? Math.round(W * 0.08) : 170;
+  const startY = layout.isPortrait ? Math.round(H * 0.18) : 276;
   const dense = rowsPerColumn > 13;
-  const rowHeight = dense ? 39 : 58;
-  const wordFont = dense ? 19 : 23;
-  const phoneticFont = dense ? 14 : 17;
-  const chineseFont = dense ? 17 : 20;
+  const rowHeight = dense ? 39 : 48;
+  const wordFont = dense ? 18 : 21;
+  const phoneticFont = dense ? 14 : 16;
+  const chineseFont = dense ? 16 : 19;
+  const panelPad = Math.round(W * 0.0625);
+  const panelW = W - panelPad * 2;
+  const panelH = Math.round(H * 0.833);
+  const panelY = Math.round(H * 0.083);
+  const innerPad = Math.round(W * 0.016);
 
   return `
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#020817" opacity="0.52"/>
-  <rect x="120" y="90" width="1680" height="900" rx="44" fill="#f8fbff" opacity="0.94"/>
-  <rect x="150" y="120" width="1620" height="840" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
-  <text x="190" y="170" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
-  <text x="190" y="215" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#020817" opacity="0.52"/>
+  <rect x="${panelPad}" y="${panelY}" width="${panelW}" height="${panelH}" rx="44" fill="#f8fbff" opacity="0.94"/>
+  <rect x="${panelPad + innerPad}" y="${panelY + innerPad * 2}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 4}" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
+  <text x="${panelPad + innerPad * 2.5}" y="${panelY + Math.round(H * 0.074)}" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
+  <text x="${panelPad + innerPad * 2.5}" y="${panelY + Math.round(H * 0.115)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
   ${vocabulary.map((entry, index) => {
     const column = Math.floor(index / rowsPerColumn);
     const row = index % rowsPerColumn;
@@ -579,66 +672,80 @@ function renderVocabularyReviewOverlay(frame) {
 }
 
 function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont }) {
-  const wordText = fitSvgText(word, 26);
-  const phoneticText = fitSvgText(phonetic, 30);
-  const translationText = fitSvgText(translation, 15);
-  const wordSize = fitFontSize(wordText, wordFont, 230);
-  const phoneticSize = fitFontSize(phoneticText, phoneticFont, 278);
-  const translationSize = fitFontSize(translationText, chineseFont, 178, true);
-  const secondLineY = y + Math.min(29, Math.max(23, rowHeight * 0.48));
+  const wordText = fitSvgText(word, 22);
+  const phoneticText = fitSvgText(phonetic, 24);
+  const cleanTranslation = translation && translation !== "重点词" ? translation : "";
+  const translationText = cleanTranslation ? fitSvgText(cleanTranslation, 18) : "";
+  const wordSize = fitFontSize(wordText, wordFont, 150);
+  const phoneticSize = fitFontSize(phoneticText, phoneticFont, 135);
+  const translationSize = translationText ? fitFontSize(translationText, chineseFont, 205, true) : chineseFont;
+  const baseline = y + Math.max(20, Math.round(rowHeight * 0.58));
   return `
   <g>
-    <line x1="${x}" y1="${y + rowHeight - 12}" x2="${x + 470}" y2="${y + rowHeight - 12}" stroke="#dbeafe" stroke-width="1.2" opacity="0.62"/>
-    <text x="${x}" y="${y}" font-family="Arial, sans-serif" font-size="${wordSize}" font-weight="900" fill="#0f172a">${escapeXml(wordText)}</text>
-    <text x="${x}" y="${secondLineY}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
-    <text x="${x + 315}" y="${secondLineY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>
+    <line x1="${x}" y1="${y + rowHeight - 7}" x2="${x + 510}" y2="${y + rowHeight - 7}" stroke="#dbeafe" stroke-width="1.2" opacity="0.58"/>
+    <text x="${x}" y="${baseline}" font-family="Arial, sans-serif" font-size="${wordSize}" font-weight="900" fill="#0f172a">${escapeXml(wordText)}</text>
+    <text x="${x + 168}" y="${baseline}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
+    ${translationText ? `<text x="${x + 326}" y="${baseline}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>` : ""}
   </g>`;
 }
 
 function renderVocabularyOverlay(frame, options = {}) {
   const [word, translation, phonetic] = [frame.vocabWord, frame.vocabTranslation, frame.vocabPhonetic];
   if (!word) return "";
-  if (options.podcast) return renderPodcastVocabularyOverlay(frame);
+  const layout = options.layout;
+  if (options.podcast) return renderPodcastVocabularyOverlay(frame, layout);
+  const W = layout ? layout.W : 1920;
+  const H = layout ? layout.H : 1080;
   const wordLines = wrapMixed(word, 24).slice(0, 1);
   const phoneticLines = wrapMixed(phonetic || "", 26).slice(0, 1);
-  const translationLines = wrapMixed(translation || "", 18).slice(0, 1);
-  const x = options.podcast ? 745 : 1430;
-  const y = options.podcast ? 82 : 70;
-  const width = options.podcast ? 430 : 430;
-  const height = options.podcast ? 134 : 136;
+  const hasTranslation = translation && translation !== "重点词";
+  const translationLines = hasTranslation ? wrapMixed(translation, 18).slice(0, 1) : [];
+  const x = options.podcast ? Math.round(W * 0.388) : Math.round(W * 0.745);
+  const y = options.podcast ? Math.round(H * 0.076) : Math.round(H * 0.065);
+  const width = Math.round(W * 0.224);
+  const height = hasTranslation ? (options.podcast ? 134 : 136) : 100;
   return `
   <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="#061527" opacity="0.72"/>
   <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.46"/>
   ${wordLines.map((line) => `<text x="${x + 28}" y="${y + 42}" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
-  ${phoneticLines.map((line) => `<text x="${x + 28}" y="${y + 79}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
-  ${translationLines.map((line) => `<text x="${x + 28}" y="${y + 114}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  ${phoneticLines.map((line) => `<text x="${x + 28}" y="${y + 72}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
+  ${translationLines.map((line) => `<text x="${x + 28}" y="${y + 104}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
 }
 
-function renderPodcastVocabularyOverlay(frame) {
+function renderPodcastVocabularyOverlay(frame, layout) {
+  const W = layout ? layout.W : 1920;
+  const H = layout ? layout.H : 1080;
   const isHostB = frame.speaker === "host-b";
-  const x = isHostB ? 1195 : 295;
-  const y = 650;
-  const width = 430;
+  const x = isHostB ? Math.round(W * 0.622) : Math.round(W * 0.154);
+  const y = Math.round(H * 0.602);
+  const width = Math.round(W * 0.224);
   const accent = isHostB ? "#f59e0b" : "#38bdf8";
   const word = fitSvgText(frame.vocabWord || "", 23);
   const phonetic = fitSvgText(frame.vocabPhonetic || "", 25);
-  const translation = fitSvgText(frame.vocabTranslation || "", 14);
+  const rawTranslation = frame.vocabTranslation || "";
+  const hasTranslation = rawTranslation && rawTranslation !== "重点词";
+  const translation = hasTranslation ? fitSvgText(rawTranslation, 14) : "";
+  const boxHeight = hasTranslation ? 82 : 58;
+  const phoneticY = hasTranslation ? y + 63 : y + 48;
   return `
-  <rect x="${x}" y="${y}" width="${width}" height="82" rx="24" fill="#061527" opacity="0.72"/>
-  <rect x="${x}" y="${y}" width="${width}" height="82" rx="24" fill="none" stroke="${accent}" stroke-width="2.2" opacity="0.62"/>
+  <rect x="${x}" y="${y}" width="${width}" height="${boxHeight}" rx="24" fill="#061527" opacity="0.72"/>
+  <rect x="${x}" y="${y}" width="${width}" height="${boxHeight}" rx="24" fill="none" stroke="${accent}" stroke-width="2.2" opacity="0.62"/>
   <text x="${x + 28}" y="${y + 33}" font-family="Georgia, 'Times New Roman', serif" font-size="${fitFontSize(word, 25, 190)}" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(word)}</text>
-  <text x="${x + 28}" y="${y + 63}" font-family="Arial, sans-serif" font-size="${fitFontSize(phonetic, 18, 175)}" font-weight="800" fill="#f59e0b">${escapeXml(phonetic)}</text>
-  <text x="${x + 245}" y="${y + 63}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${fitFontSize(translation, 20, 140, true)}" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(translation)}</text>`;
+  <text x="${x + 28}" y="${phoneticY}" font-family="Arial, sans-serif" font-size="${fitFontSize(phonetic, 18, 175)}" font-weight="800" fill="#f59e0b">${escapeXml(phonetic)}</text>
+  ${hasTranslation ? `<text x="${x + 245}" y="${phoneticY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${fitFontSize(translation, 20, 140, true)}" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(translation)}</text>` : ""}`;
 }
 
-function renderBottomText(frame) {
-  const englishLines = wrapWords(frame.english || "", 46).slice(0, 2);
-  const chineseLines = wrapMixed(frame.chinese || "", 40).slice(0, 2);
-  const englishFont = englishLines.length > 1 ? 50 : 54;
-  const chineseFont = chineseLines.length > 1 ? 32 : 35;
+function renderBottomText(frame, layout) {
+  const { W, CAPTION_Y, CAPTION_H } = layout;
+  const wrapLen = layout.isPortrait ? 36 : 46;
+  const chineseWrapLen = layout.isPortrait ? 32 : 40;
+  const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 2);
+  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
+  const englishFont = englishLines.length > 1 ? 48 : 52;
+  const chineseFont = chineseLines.length > 1 ? 30 : 33;
   const englishLineHeight = 52;
   const chineseLineHeight = 38;
-  const gap = 66;
+  const gap = 42;
   const englishBlockHeight = englishFont + Math.max(0, englishLines.length - 1) * englishLineHeight;
   const chineseBlockHeight = chineseFont + Math.max(0, chineseLines.length - 1) * chineseLineHeight;
   const totalTextHeight = englishBlockHeight + gap + chineseBlockHeight;
@@ -646,12 +753,12 @@ function renderBottomText(frame) {
   const englishY = top + englishFont;
   const chineseY = top + englishBlockHeight + gap + chineseFont;
   return `
-  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont)}
-  ${chineseLines.map((line, index) => `<text x="${WIDTH / 2}" y="${chineseY + index * 38}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.86" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont, layout)}
+  ${chineseLines.map((line, index) => `<text x="${W / 2}" y="${chineseY + index * 38}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.86" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
 }
 
-function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize) {
-  return renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, WIDTH / 2);
+function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize, layout) {
+  return renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, layout.W / 2);
 }
 
 function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, centerX) {
@@ -667,144 +774,150 @@ function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, c
     const before = line.slice(0, match.start);
     const term = line.slice(match.start, match.end);
     const after = line.slice(match.end);
-    const beforeWidth = estimateEnglishTextWidth(before, fontSize);
-    const termWidth = estimateEnglishTextWidth(term, fontSize);
-    const afterWidth = estimateEnglishTextWidth(after, fontSize);
-    const totalWidth = beforeWidth + termWidth + afterWidth;
-    const x = centerX - totalWidth / 2;
-    return `<text x="${x}" y="${y}" xml:space="preserve" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="#ffffff" filter="url(#textShadow)">
+    return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="#ffffff" filter="url(#textShadow)">
       <tspan xml:space="preserve">${escapeXml(before)}</tspan><tspan fill="#f59e0b">${escapeXml(term)}</tspan><tspan xml:space="preserve">${escapeXml(after)}</tspan>
     </text>`;
   }).join("\n  ");
 }
 
-function renderCenteredText(line, y, fontSize, fill) {
-  return renderCenteredTextAt(line, y, fontSize, fill, WIDTH / 2);
+function renderCenteredText(line, y, fontSize, fill, layout) {
+  return renderCenteredTextAt(line, y, fontSize, fill, layout.W / 2);
 }
 
 function renderCenteredTextAt(line, y, fontSize, fill, centerX) {
   return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="${fill}" filter="url(#textShadow)">${escapeXml(line)}</text>`;
 }
 
-function renderFallbackImage(frame, palette) {
+function renderFallbackImage(frame, palette, layout) {
+  const { W, H } = layout;
   const visual = String(frame.visual || "storybook learning scene");
   return `
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="${palette.bg}"/>
-  <rect x="0" y="0" width="${WIDTH}" height="${HEIGHT}" fill="#f9efe1" opacity="0.1"/>
-  ${renderSceneSetting(visual, palette)}
-  ${renderCharacters(palette)}
-  ${renderImportantObject(visual, palette)}`;
+  <rect x="0" y="0" width="${W}" height="${H}" fill="${palette.bg}"/>
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#f9efe1" opacity="0.1"/>
+  ${renderSceneSetting(visual, palette, W, H)}
+  ${renderCharacters(palette, W, H)}
+  ${renderImportantObject(visual, palette, W, H)}`;
 }
 
-function renderSceneSetting(visual, palette) {
+function renderSceneSetting(visual, palette, W, H) {
   const text = visual.toLowerCase();
+  const s = W / 1920;
+  const sy = H / 1080;
+  const S = (v) => Math.round(v * s);
+  const SY = (v) => Math.round(v * sy);
 
   if (text.includes("lighthouse") || text.includes("storm") || text.includes("coastal")) {
     return `
-  <rect x="0" y="330" width="${WIDTH}" height="190" fill="#12354a" opacity="0.85"/>
-  <path d="M0 375 C260 315 460 430 700 370 C960 305 1130 425 1390 360 C1620 305 1780 370 1920 340 L1920 520 L0 520 Z" fill="#1f6f92" opacity="0.72"/>
-  <polygon points="1240,96 1380,96 1430,430 1190,430" fill="#eee8dc"/>
-  <rect x="1205" y="150" width="210" height="52" fill="${palette.accent}" opacity="0.9"/>
-  <polygon points="1185,96 1435,96 1350,40 1260,40" fill="#222936"/>
-  <path d="M1340 72 L1805 155" stroke="#ffd166" stroke-width="22" opacity="0.55"/>`;
+  <rect x="0" y="${SY(330)}" width="${W}" height="${SY(190)}" fill="#12354a" opacity="0.85"/>
+  <path d="M0 ${SY(375)} C${S(260)} ${SY(315)} ${S(460)} ${SY(430)} ${S(700)} ${SY(370)} C${S(960)} ${SY(305)} ${S(1130)} ${SY(425)} ${S(1390)} ${SY(360)} C${S(1620)} ${SY(305)} ${S(1780)} ${SY(370)} ${W} ${SY(340)} L${W} ${SY(520)} L0 ${SY(520)} Z" fill="#1f6f92" opacity="0.72"/>
+  <polygon points="${S(1240)},${SY(96)} ${S(1380)},${SY(96)} ${S(1430)},${SY(430)} ${S(1190)},${SY(430)}" fill="#eee8dc"/>
+  <rect x="${S(1205)}" y="${SY(150)}" width="${S(210)}" height="${SY(52)}" fill="${palette.accent}" opacity="0.9"/>
+  <polygon points="${S(1185)},${SY(96)} ${S(1435)},${SY(96)} ${S(1350)},${SY(40)} ${S(1260)},${SY(40)}" fill="#222936"/>
+  <path d="M${S(1340)} ${SY(72)} L${S(1805)} ${SY(155)}" stroke="#ffd166" stroke-width="22" opacity="0.55"/>`;
   }
 
   if (text.includes("mountain") || text.includes("snow")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#b9d8ea" opacity="0.62"/>
-  <polygon points="0,520 360,115 700,520" fill="#435466"/>
-  <polygon points="320,520 820,70 1320,520" fill="#57697b"/>
-  <polygon points="900,520 1390,125 1920,520" fill="#36495c"/>
-  <polygon points="820,70 720,178 928,176" fill="#f7fbff"/>
-  <path d="M180 430 C520 390 780 460 1060 410 C1350 358 1590 430 1840 380" stroke="#ffffff" stroke-width="18" opacity="0.75" fill="none"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#b9d8ea" opacity="0.62"/>
+  <polygon points="0,${SY(520)} ${S(360)},${SY(115)} ${S(700)},${SY(520)}" fill="#435466"/>
+  <polygon points="${S(320)},${SY(520)} ${S(820)},${SY(70)} ${S(1320)},${SY(520)}" fill="#57697b"/>
+  <polygon points="${S(900)},${SY(520)} ${S(1390)},${SY(125)} ${W},${SY(520)}" fill="#36495c"/>
+  <polygon points="${S(820)},${SY(70)} ${S(720)},${SY(178)} ${S(928)},${SY(176)}" fill="#f7fbff"/>
+  <path d="M${S(180)} ${SY(430)} C${S(520)} ${SY(390)} ${S(780)} ${SY(460)} ${S(1060)} ${SY(410)} C${S(1350)} ${SY(358)} ${S(1590)} ${SY(430)} ${S(1840)} ${SY(380)}" stroke="#ffffff" stroke-width="18" opacity="0.75" fill="none"/>`;
   }
 
   if (text.includes("forest") || text.includes("tree") || text.includes("valley")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#9cc6aa" opacity="0.48"/>
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#9cc6aa" opacity="0.48"/>
   ${[170, 360, 590, 1380, 1585, 1760].map((x, index) => `
-  <rect x="${x}" y="${225 + (index % 2) * 18}" width="34" height="230" fill="#5b3f2f"/>
-  <circle cx="${x + 17}" cy="${185 + (index % 2) * 20}" r="${104 + (index % 3) * 18}" fill="#1f6f58" opacity="0.86"/>`).join("\n")}
-  <path d="M0 455 C370 390 650 510 980 430 C1280 365 1580 455 1920 400 L1920 520 L0 520 Z" fill="#274c3c" opacity="0.9"/>`;
+  <rect x="${S(x)}" y="${SY(225 + (index % 2) * 18)}" width="${S(34)}" height="${SY(230)}" fill="#5b3f2f"/>
+  <circle cx="${S(x + 17)}" cy="${SY(185 + (index % 2) * 20)}" r="${S(104 + (index % 3) * 18)}" fill="#1f6f58" opacity="0.86"/>`).join("\n")}
+  <path d="M0 ${SY(455)} C${S(370)} ${SY(390)} ${S(650)} ${SY(510)} ${S(980)} ${SY(430)} C${S(1280)} ${SY(365)} ${S(1580)} ${SY(455)} ${W} ${SY(400)} L${W} ${SY(520)} L0 ${SY(520)} Z" fill="#274c3c" opacity="0.9"/>`;
   }
 
   if (text.includes("school") || text.includes("classroom") || text.includes("hallway")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#d8c3a5" opacity="0.95"/>
-  <rect x="0" y="405" width="${WIDTH}" height="115" fill="#795548"/>
-  <rect x="180" y="90" width="500" height="260" fill="#263238" opacity="0.92"/>
-  <rect x="760" y="120" width="260" height="285" fill="#9f6b45"/>
-  <circle cx="980" cy="262" r="11" fill="#f1d37a"/>
-  <rect x="1130" y="95" width="560" height="250" fill="#f6fbff" opacity="0.72"/>
-  <path d="M1130 205 L1690 205 M1410 95 L1410 345" stroke="#6d8793" stroke-width="12" opacity="0.55"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#d8c3a5" opacity="0.95"/>
+  <rect x="0" y="${SY(405)}" width="${W}" height="${SY(115)}" fill="#795548"/>
+  <rect x="${S(180)}" y="${SY(90)}" width="${S(500)}" height="${SY(260)}" fill="#263238" opacity="0.92"/>
+  <rect x="${S(760)}" y="${SY(120)}" width="${S(260)}" height="${SY(285)}" fill="#9f6b45"/>
+  <circle cx="${S(980)}" cy="${SY(262)}" r="11" fill="#f1d37a"/>
+  <rect x="${S(1130)}" y="${SY(95)}" width="${S(560)}" height="${SY(250)}" fill="#f6fbff" opacity="0.72"/>
+  <path d="M${S(1130)} ${SY(205)} L${S(1690)} ${SY(205)} M${S(1410)} ${SY(95)} L${S(1410)} ${SY(345)}" stroke="#6d8793" stroke-width="12" opacity="0.55"/>`;
   }
 
   if (text.includes("library") || text.includes("book")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#6a4b35"/>
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#6a4b35"/>
   ${[90, 520, 1180, 1535].map((x) => `
-  <rect x="${x}" y="75" width="300" height="345" fill="#3a2418" opacity="0.9"/>
-  ${[0, 1, 2, 3].map((row) => `<rect x="${x + 22}" y="${105 + row * 74}" width="256" height="44" fill="${row % 2 ? "#b45b45" : "#d29b52"}" opacity="0.9"/>`).join("\n")}`).join("\n")}
-  <ellipse cx="960" cy="445" rx="390" ry="70" fill="#2b1a12" opacity="0.5"/>`;
+  <rect x="${S(x)}" y="${SY(75)}" width="${S(300)}" height="${SY(345)}" fill="#3a2418" opacity="0.9"/>
+  ${[0, 1, 2, 3].map((row) => `<rect x="${S(x + 22)}" y="${SY(105 + row * 74)}" width="${S(256)}" height="${SY(44)}" fill="${row % 2 ? "#b45b45" : "#d29b52"}" opacity="0.9"/>`).join("\n")}`).join("\n")}
+  <ellipse cx="${S(960)}" cy="${SY(445)}" rx="${S(390)}" ry="${SY(70)}" fill="#2b1a12" opacity="0.5"/>`;
   }
 
   if (text.includes("museum") || text.includes("statue")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#cfc2ad"/>
-  <rect x="0" y="400" width="${WIDTH}" height="120" fill="#8a8175"/>
-  ${[360, 600, 840, 1080, 1320].map((x) => `<rect x="${x}" y="115" width="80" height="285" fill="#ece1d1"/><rect x="${x - 35}" y="90" width="150" height="34" fill="#ddd0be"/>`).join("\n")}
-  <circle cx="1510" cy="260" r="92" fill="#59636f" opacity="0.82"/>
-  <rect x="1465" y="345" width="90" height="80" fill="#59636f" opacity="0.82"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#cfc2ad"/>
+  <rect x="0" y="${SY(400)}" width="${W}" height="${SY(120)}" fill="#8a8175"/>
+  ${[360, 600, 840, 1080, 1320].map((x) => `<rect x="${S(x)}" y="${SY(115)}" width="${S(80)}" height="${SY(285)}" fill="#ece1d1"/><rect x="${S(x - 35)}" y="${SY(90)}" width="${S(150)}" height="${SY(34)}" fill="#ddd0be"/>`).join("\n")}
+  <circle cx="${S(1510)}" cy="${SY(260)}" r="${S(92)}" fill="#59636f" opacity="0.82"/>
+  <rect x="${S(1465)}" y="${SY(345)}" width="${S(90)}" height="${SY(80)}" fill="#59636f" opacity="0.82"/>`;
   }
 
   if (text.includes("train") || text.includes("station")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#546a7b"/>
-  <rect x="0" y="355" width="${WIDTH}" height="165" fill="#2d2f34"/>
-  <path d="M90 420 L1780 420 M130 480 L1820 480" stroke="#cfd8dc" stroke-width="14"/>
-  <rect x="430" y="165" width="930" height="175" rx="26" fill="#dbe8ed"/>
-  <rect x="500" y="205" width="170" height="88" fill="#254e70"/>
-  <rect x="735" y="205" width="170" height="88" fill="#254e70"/>
-  <rect x="970" y="205" width="170" height="88" fill="#254e70"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#546a7b"/>
+  <rect x="0" y="${SY(355)}" width="${W}" height="${SY(165)}" fill="#2d2f34"/>
+  <path d="M${S(90)} ${SY(420)} L${S(1780)} ${SY(420)} M${S(130)} ${SY(480)} L${S(1820)} ${SY(480)}" stroke="#cfd8dc" stroke-width="14"/>
+  <rect x="${S(430)}" y="${SY(165)}" width="${S(930)}" height="${SY(175)}" rx="26" fill="#dbe8ed"/>
+  <rect x="${S(500)}" y="${SY(205)}" width="${S(170)}" height="${SY(88)}" fill="#254e70"/>
+  <rect x="${S(735)}" y="${SY(205)}" width="${S(170)}" height="${SY(88)}" fill="#254e70"/>
+  <rect x="${S(970)}" y="${SY(205)}" width="${S(170)}" height="${SY(88)}" fill="#254e70"/>`;
   }
 
   if (text.includes("bakery")) {
     return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#c98a5a"/>
-  <rect x="230" y="115" width="1460" height="305" fill="#f4d6ad"/>
-  <path d="M230 115 H1690 V190 C1560 155 1450 220 1320 185 C1190 150 1090 215 960 180 C830 145 720 215 590 180 C470 150 350 210 230 175 Z" fill="#c03535"/>
-  <rect x="450" y="230" width="280" height="160" fill="#5d4037"/>
-  <rect x="910" y="245" width="580" height="95" fill="#fff2d6" opacity="0.95"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#c98a5a"/>
+  <rect x="${S(230)}" y="${SY(115)}" width="${S(1460)}" height="${SY(305)}" fill="#f4d6ad"/>
+  <path d="M${S(230)} ${SY(115)} H${S(1690)} V${SY(190)} C${S(1560)} ${SY(155)} ${S(1450)} ${SY(220)} ${S(1320)} ${SY(185)} C${S(1190)} ${SY(150)} ${S(1090)} ${SY(215)} ${S(960)} ${SY(180)} C${S(830)} ${SY(145)} ${S(720)} ${SY(215)} ${S(590)} ${SY(180)} C${S(470)} ${SY(150)} ${S(350)} ${SY(210)} ${S(230)} ${SY(175)} Z" fill="#c03535"/>
+  <rect x="${S(450)}" y="${SY(230)}" width="${S(280)}" height="${SY(160)}" fill="#5d4037"/>
+  <rect x="${S(910)}" y="${SY(245)}" width="${S(580)}" height="${SY(95)}" fill="#fff2d6" opacity="0.95"/>`;
   }
 
   return `
-  <rect x="0" y="0" width="${WIDTH}" height="520" fill="#92b8c7" opacity="0.54"/>
-  <circle cx="1570" cy="92" r="80" fill="#ffd166" opacity="0.74"/>
-  <path d="M0 360 C260 300 520 430 780 350 C1030 275 1310 410 1600 330 C1740 290 1845 315 1920 300 L1920 520 L0 520 Z" fill="${palette.secondary}" opacity="0.76"/>
-  <rect x="230" y="190" width="390" height="220" fill="#f0dfc2" opacity="0.92"/>
-  <polygon points="200,190 425,80 650,190" fill="${palette.accent}" opacity="0.9"/>
-  <rect x="780" y="155" width="520" height="255" rx="18" fill="#2d3748" opacity="0.78"/>
-  <rect x="850" y="210" width="150" height="100" fill="#f6fbff" opacity="0.72"/>
-  <rect x="1060" y="210" width="150" height="100" fill="#f6fbff" opacity="0.72"/>`;
+  <rect x="0" y="0" width="${W}" height="${SY(520)}" fill="#92b8c7" opacity="0.54"/>
+  <circle cx="${S(1570)}" cy="${SY(92)}" r="${S(80)}" fill="#ffd166" opacity="0.74"/>
+  <path d="M0 ${SY(360)} C${S(260)} ${SY(300)} ${S(520)} ${SY(430)} ${S(780)} ${SY(350)} C${S(1030)} ${SY(275)} ${S(1310)} ${SY(410)} ${S(1600)} ${SY(330)} C${S(1740)} ${SY(290)} ${S(1845)} ${SY(315)} ${W} ${SY(300)} L${W} ${SY(520)} L0 ${SY(520)} Z" fill="${palette.secondary}" opacity="0.76"/>
+  <rect x="${S(230)}" y="${SY(190)}" width="${S(390)}" height="${SY(220)}" fill="#f0dfc2" opacity="0.92"/>
+  <polygon points="${S(200)},${SY(190)} ${S(425)},${SY(80)} ${S(650)},${SY(190)}" fill="${palette.accent}" opacity="0.9"/>
+  <rect x="${S(780)}" y="${SY(155)}" width="${S(520)}" height="${SY(255)}" rx="18" fill="#2d3748" opacity="0.78"/>
+  <rect x="${S(850)}" y="${SY(210)}" width="${S(150)}" height="${SY(100)}" fill="#f6fbff" opacity="0.72"/>
+  <rect x="${S(1060)}" y="${SY(210)}" width="${S(150)}" height="${SY(100)}" fill="#f6fbff" opacity="0.72"/>`;
 }
 
-function renderCharacters(palette) {
+function renderCharacters(palette, W, H) {
+  const s = W / 1920;
+  const sy = H / 1080;
+  const S = (v) => Math.round(v * s);
+  const SY = (v) => Math.round(v * sy);
   return `
-  <ellipse cx="960" cy="438" rx="390" ry="58" fill="#000000" opacity="0.18"/>
-  <circle cx="915" cy="245" r="58" fill="#f2c9a0"/>
-  <path d="M850 335 C850 270 980 270 982 335 L1010 450 L815 450 Z" fill="${palette.accent}" opacity="0.94"/>
-  <path d="M815 350 C760 380 720 415 690 462" stroke="#f2c9a0" stroke-width="24" stroke-linecap="round"/>
-  <path d="M1010 350 C1080 372 1125 406 1165 452" stroke="#f2c9a0" stroke-width="24" stroke-linecap="round"/>
-  <circle cx="1178" cy="292" r="44" fill="#e9b889"/>
-  <path d="M1138 354 C1155 310 1225 310 1245 354 L1268 446 L1115 446 Z" fill="#2f6f8f" opacity="0.95"/>`;
+  <ellipse cx="${S(960)}" cy="${SY(438)}" rx="${S(390)}" ry="${SY(58)}" fill="#000000" opacity="0.18"/>
+  <circle cx="${S(915)}" cy="${SY(245)}" r="${S(58)}" fill="#f2c9a0"/>
+  <path d="M${S(850)} ${SY(335)} C${S(850)} ${SY(270)} ${S(980)} ${SY(270)} ${S(982)} ${SY(335)} L${S(1010)} ${SY(450)} L${S(815)} ${SY(450)} Z" fill="${palette.accent}" opacity="0.94"/>
+  <path d="M${S(815)} ${SY(350)} C${S(760)} ${SY(380)} ${S(720)} ${SY(415)} ${S(690)} ${SY(462)}" stroke="#f2c9a0" stroke-width="24" stroke-linecap="round"/>
+  <path d="M${S(1010)} ${SY(350)} C${S(1080)} ${SY(372)} ${S(1125)} ${SY(406)} ${S(1165)} ${SY(452)}" stroke="#f2c9a0" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="${S(1178)}" cy="${SY(292)}" r="${S(44)}" fill="#e9b889"/>
+  <path d="M${S(1138)} ${SY(354)} C${S(1155)} ${SY(310)} ${S(1225)} ${SY(310)} ${S(1245)} ${SY(354)} L${S(1268)} ${SY(446)} L${S(1115)} ${SY(446)} Z" fill="#2f6f8f" opacity="0.95"/>`;
 }
 
-function renderImportantObject(visual, palette) {
+function renderImportantObject(visual, palette, W, H) {
+  const s = W / 1920;
+  const S = (v) => Math.round(v * s);
   return `
-  <g transform="translate(1280 300)">
-    <ellipse cx="0" cy="112" rx="158" ry="34" fill="#000000" opacity="0.18"/>
-    <rect x="-105" y="-34" width="210" height="146" rx="26" fill="#fff7dc" opacity="0.94"/>
-    <path d="M-66 26 C-18 -46 60 -36 70 32 C80 90 -32 110 -66 26 Z" fill="${palette.accent}" opacity="0.88"/>
+  <g transform="translate(${S(1280)} ${Math.round(H * 0.278)})">
+    <ellipse cx="0" cy="${S(112)}" rx="${S(158)}" ry="${S(34)}" fill="#000000" opacity="0.18"/>
+    <rect x="${S(-105)}" y="${S(-34)}" width="${S(210)}" height="${S(146)}" rx="26" fill="#fff7dc" opacity="0.94"/>
+    <path d="M${S(-66)} ${S(26)} C${S(-18)} ${S(-46)} ${S(60)} ${S(-36)} ${S(70)} ${S(32)} C${S(80)} ${S(90)} ${S(-32)} ${S(110)} ${S(-66)} ${S(26)} Z" fill="${palette.accent}" opacity="0.88"/>
   </g>`;
 }
 

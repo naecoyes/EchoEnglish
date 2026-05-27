@@ -277,6 +277,7 @@ function normalizeStory(input, context) {
     .map((section, index) => normalizeSection(section, index, input?.title || outline.title))
     .filter((section) => section.sentences.length === 4 && section.translations.length === section.sentences.length)
     .slice(0, 30);
+  normalizedSections = deduplicateSections(normalizedSections);
   const generationWarnings = [];
 
   if (normalizedSections.length < 8) {
@@ -322,6 +323,36 @@ function normalizeStory(input, context) {
     sections: normalizedSections,
     closing: []
   });
+}
+
+function deduplicateSections(sections) {
+  const seen = new Set();
+  const result = [];
+  for (const section of sections) {
+    const sentences = section.sentences || [];
+    const signature = sentences.map((s) => normalizeForDedupe(s)).join("|");
+    if (seen.has(signature)) continue;
+    const firstSentence = normalizeForDedupe(sentences[0] || "");
+    if (firstSentence.length > 20) {
+      const prefix = firstSentence.slice(0, 40);
+      const isFiller = result.some((prev) => {
+        const prevFirst = normalizeForDedupe((prev.sentences || [])[0] || "");
+        return prevFirst.slice(0, 40) === prefix;
+      });
+      if (isFiller) continue;
+    }
+    const title = String(section.title || "");
+    const isAutoTitle = /^Scene \d+$/.test(title);
+    const hasFillerPattern = sentences.some((s) => /reached an important|showed how a plan became|connected this moment with a larger|The next step was also important/i.test(s));
+    if (isAutoTitle && hasFillerPattern) continue;
+    seen.add(signature);
+    result.push(section);
+  }
+  return result;
+}
+
+function normalizeForDedupe(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
 }
 
 function completeSectionsFromOutline(sections, outline, targetScenes) {
@@ -660,7 +691,7 @@ function fallbackVocabulary(text) {
     meaning: "意义"
   };
   return unique.length
-    ? unique.map((word) => [word, translations[word] || "重点词"])
+    ? unique.map((word) => [word, translations[word] || ""])
     : [["notice", "注意到"], ["choice", "选择"], ["carefully", "小心地"]];
 }
 

@@ -119,7 +119,7 @@ function normalizeVocabularyEntry(entry) {
   const looksLikePhonetic = second.startsWith("/") && second.endsWith("/");
   return {
     word,
-    translation: looksLikePhonetic ? third || bank.translation : second && second !== "重点词" ? second : bank.translation,
+    translation: looksLikePhonetic ? third || bank.translation : second || bank.translation,
     phonetic: looksLikePhonetic ? second : third.startsWith("/") ? third : bank.phonetic
   };
 }
@@ -153,7 +153,7 @@ function lookupBank(word) {
   if (phrase) return { translation: phrase[0], phonetic: phrase[1] };
   const single = VOCAB_BANK[key];
   if (single) return { translation: single[0], phonetic: single[1] };
-  return { translation: "重点词", phonetic: buildFallbackPhonetic(word) };
+  return { translation: "", phonetic: buildFallbackPhonetic(word) };
 }
 
 function dedupeCandidates(candidates) {

@@ -432,6 +432,10 @@ h2 {
   flex-wrap: wrap;
 }
 
+.panel-title-row {
+  align-items: baseline;
+}
+
 .state-pill,
 .chip-row span {
   display: inline-flex;
@@ -857,16 +861,31 @@ button:disabled {
   gap: 12px;
 }
 
+.video-stage.portrait {
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.video-stage.portrait video {
+  aspect-ratio: 9 / 16;
+  border-radius: 20px;
+}
+
 .title-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 
 .download-btn {
-  padding: 6px 16px;
+  min-height: 44px;
+  padding: 0 16px;
   font-size: 12px;
+  font-weight: 850;
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 video {
