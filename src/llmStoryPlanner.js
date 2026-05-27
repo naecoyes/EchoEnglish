@@ -279,15 +279,17 @@ function normalizeStory(input, context) {
     .slice(0, 30);
   normalizedSections = deduplicateSections(normalizedSections);
   const generationWarnings = [];
+  const targetMinutes = context.targetDurationMinutes || 15;
+  const targetScenes = Math.max(12, Math.round(targetMinutes * 1.1));
 
   if (normalizedSections.length < 8) {
     return fallbackStoryFromOutline(outline, context);
   }
 
-  if (normalizedSections.length < 16) {
+  if (normalizedSections.length < targetScenes) {
     const receivedCount = normalizedSections.length;
-    normalizedSections = completeSectionsFromOutline(normalizedSections, outline, 16);
-    generationWarnings.push(`LLM returned ${receivedCount} valid scenes; EchoEnglish auto-filled ${normalizedSections.length - receivedCount} outline-based scenes so the draft can be reviewed.`);
+    normalizedSections = completeSectionsFromOutline(normalizedSections, outline, targetScenes);
+    generationWarnings.push(`LLM returned ${receivedCount} valid scenes; EchoEnglish auto-filled ${normalizedSections.length - receivedCount} outline-based scenes for the ${targetMinutes}-minute target.`);
   }
 
   const imageBeatCount = countImageBeats(normalizedSections);
@@ -334,12 +336,16 @@ function deduplicateSections(sections) {
     if (seen.has(signature)) continue;
     const firstSentence = normalizeForDedupe(sentences[0] || "");
     if (firstSentence.length > 20) {
-      const prefix = firstSentence.slice(0, 40);
-      const isFiller = result.some((prev) => {
+      const isNearDup = result.some((prev) => {
         const prevFirst = normalizeForDedupe((prev.sentences || [])[0] || "");
-        return prevFirst.slice(0, 40) === prefix;
+        if (prevFirst === firstSentence) return true;
+        // Only flag as near-dup if 80%+ of first sentence overlaps
+        const minLen = Math.min(prevFirst.length, firstSentence.length);
+        if (minLen < 40) return false;
+        const overlap = Math.min(80, minLen);
+        return prevFirst.slice(0, overlap) === firstSentence.slice(0, overlap);
       });
-      if (isFiller) continue;
+      if (isNearDup) continue;
     }
     const title = String(section.title || "");
     const isAutoTitle = /^Scene \d+$/.test(title);
@@ -563,20 +569,82 @@ function fallbackScene(outline, beat, nextBeat, index) {
 }
 
 function fallbackFactualScene(outline, beat, nextBeat, index) {
-  const subject = outline.title;
-  const sentences = [
-    `${subject} reached an important public milestone in this part of the timeline.`,
-    `The milestone showed how a plan became more concrete and visible.`,
-    `Public reports connected this moment with a larger business decision.`,
-    `The next step was also important: ${cleanSentence(nextBeat)}`
-  ];
-  const translations = [
-    `${subject}在这段时间线中到达了一个重要的公开里程碑。`,
-    `这个里程碑显示了一个计划如何变得更加具体和清晰。`,
-    `公开信息把这一刻和更大的商业决定联系起来。`,
-    `下一步同样重要：${nextBeat}`
-  ];
-  const visual = `${subject}, factual documentary scene about ${beat}, public event or realistic industry setting, ${outline.visualStyle}`;
+  const subject = outline.title || "The company";
+  const beatText = cleanSentence(beat);
+  const nextText = cleanSentence(nextBeat);
+
+  // Expand the story beat into 4 meaningful sentences
+  const beatLower = beatText.toLowerCase();
+  let sentences, translations;
+
+  if (beatLower.includes("founded") || beatLower.includes("started") || beatLower.includes("began")) {
+    sentences = [
+      `${beatText}`,
+      `This was the beginning of a new chapter for ${subject}.`,
+      `The team worked hard to turn their vision into reality.`,
+      `${nextText}`
+    ];
+    translations = [
+      beatText.replace(/^In \d{4},/, (m) => m + "，"),
+      `这是${subject}新篇章的开始。`,
+      `团队努力将愿景变为现实。`,
+      nextText
+    ];
+  } else if (beatLower.includes("launch") || beatLower.includes("release") || beatLower.includes("introduce")) {
+    sentences = [
+      `${beatText}`,
+      `The market responded with great interest and excitement.`,
+      `This product helped the company reach many new customers.`,
+      `${nextText}`
+    ];
+    translations = [
+      beatText,
+      `市场反响热烈，引起了很大的关注。`,
+      `这款产品帮助公司接触到了很多新客户。`,
+      nextText
+    ];
+  } else if (beatLower.includes("ipo") || beatLower.includes("public") || beatLower.includes("invest")) {
+    sentences = [
+      `${beatText}`,
+      `This event brought significant new resources for future growth.`,
+      `The company used this opportunity to expand its business further.`,
+      `${nextText}`
+    ];
+    translations = [
+      beatText,
+      `这一事件为未来的发展带来了重要的新资源。`,
+      `公司利用这个机会进一步扩展了业务。`,
+      nextText
+    ];
+  } else if (beatLower.includes("expand") || beatLower.includes("global") || beatLower.includes("international")) {
+    sentences = [
+      `${beatText}`,
+      `Entering new markets brought both opportunities and challenges.`,
+      `The company adapted its strategy to succeed in different regions.`,
+      `${nextText}`
+    ];
+    translations = [
+      beatText,
+      `进入新市场带来了机遇和挑战。`,
+      `公司调整了策略以在不同地区取得成功。`,
+      nextText
+    ];
+  } else {
+    sentences = [
+      `${beatText}`,
+      `This step was an important part of ${subject}'s growth story.`,
+      `The results showed that the company was moving in the right direction.`,
+      `${nextText}`
+    ];
+    translations = [
+      beatText,
+      `这一步是${subject}发展历程中的重要一环。`,
+      `结果表明公司正在朝着正确的方向前进。`,
+      nextText
+    ];
+  }
+
+  const visual = `${subject}, factual documentary scene about ${beat}, public event or realistic industry setting, ${outline.visualStyle || "cinematic lighting"}`;
   return {
     title: `Scene ${index + 1}`,
     baseSectionIndex: index,
