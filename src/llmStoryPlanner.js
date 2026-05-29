@@ -208,6 +208,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     factualMode
       ? "- The narration can be warm and story-like, but it must read like a documentary history, not a made-up workplace story."
       : "",
+    outline?.validationFeedback ? `- IMPORTANT: Previous generation had issues. Fix these problems: ${outline.validationFeedback}` : "",
     "Return only valid JSON with this shape:",
     "{",
     '  "title": "string",',
@@ -361,8 +362,9 @@ function normalizeStory(input, context) {
   const targetScenes = outline.targetScenes || Math.max(12, Math.round((context.targetDurationMinutes || 15) * 1.1));
   const targetImages = outline.targetImages || Math.round((context.targetDurationMinutes || 15) * 2.5);
 
+  // Require minimum scene count - no fallback
   if (normalizedSections.length < 8) {
-    return fallbackStoryFromOutline(outline, context);
+    throw new Error(`LLM returned only ${normalizedSections.length} valid scenes. Minimum 8 scenes required. Please retry generation.`);
   }
 
   // Don't force-fill to target scenes - use what LLM generated
@@ -932,10 +934,114 @@ function articleFor(word) {
   return /^[aeiou]/i.test(String(word)) ? "an" : "a";
 }
 
+async function validateStoryWithLLM(story, topic, config) {
+  const prompt = `You are a video content quality validator. Review this English learning story video script and check for issues.
+
+Topic: ${topic}
+
+Script to validate:
+${JSON.stringify(story, null, 2)}
+
+Check the following and return a JSON response:
+1. Are all scenes complete with 3-6 sentences each?
+2. Do all scenes have proper Chinese translations?
+3. Do all scenes have vocabulary notes?
+4. Do all scenes have image prompts?
+5. Is the content logical and non-repetitive?
+6. Are there any factual inconsistencies?
+7. Is the story flow natural and engaging?
+
+Return JSON:
+{
+  "valid": true/false,
+  "issues": ["list of specific issues found"],
+  "suggestions": ["list of improvements"],
+  "sceneCount": number,
+  "totalSentences": number,
+  "qualityScore": 1-10
+}`;
+
+  try {
+    const payload = await callChatJson(config, prompt, 1500);
+    return {
+      valid: payload.valid !== false,
+      issues: Array.isArray(payload.issues) ? payload.issues : [],
+      suggestions: Array.isArray(payload.suggestions) ? payload.suggestions : [],
+      sceneCount: payload.sceneCount || 0,
+      totalSentences: payload.totalSentences || 0,
+      qualityScore: payload.qualityScore || 0
+    };
+  } catch (error) {
+    console.error("Validation failed:", error.message);
+    return { valid: true, issues: [], suggestions: [], sceneCount: 0, totalSentences: 0, qualityScore: 0 };
+  }
+}
+
+async function createPureStory({ topic, targetDurationMinutes, level, annotationStyle, outline, template = null }) {
+  const config = await getLlmConfig();
+  if (!config.apiKey) {
+    throw new Error("LLM API key is required for story script generation. Open Settings and save an LLM API key.");
+  }
+
+  const maxRetries = 3;
+  let lastStory = null;
+  let lastValidation = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[Story Generation] Attempt ${attempt}/${maxRetries} for topic: ${topic}`);
+
+    const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline, template), 22000);
+    const story = normalizeStory(payload, {
+      topic,
+      targetDurationMinutes,
+      level,
+      annotationStyle,
+      outline,
+      template,
+      source: "llm"
+    });
+
+    // Validate the generated story
+    console.log(`[Story Generation] Validating story (attempt ${attempt})...`);
+    const validation = await validateStoryWithLLM(story, topic, config);
+
+    if (validation.valid && validation.qualityScore >= 7) {
+      console.log(`[Story Generation] Validation passed! Quality score: ${validation.qualityScore}/10`);
+      console.log(`[Story Generation] Scenes: ${validation.sceneCount}, Sentences: ${validation.totalSentences}`);
+      if (validation.suggestions.length > 0) {
+        console.log(`[Story Generation] Suggestions:`, validation.suggestions.join("; "));
+      }
+      return story;
+    }
+
+    console.log(`[Story Generation] Validation failed (attempt ${attempt}). Issues:`, validation.issues.join("; "));
+    lastStory = story;
+    lastValidation = validation;
+
+    if (attempt < maxRetries) {
+      console.log(`[Story Generation] Retrying with feedback...`);
+      // Add validation feedback to outline for next attempt
+      outline = {
+        ...outline,
+        validationFeedback: validation.issues.join("; ")
+      };
+    }
+  }
+
+  // If all retries fail, return the last story with warnings
+  console.log(`[Story Generation] All ${maxRetries} attempts failed validation. Returning last generated story.`);
+  if (lastValidation) {
+    console.log(`[Story Generation] Last validation score: ${lastValidation.qualityScore}/10`);
+    console.log(`[Story Generation] Issues:`, lastValidation.issues.join("; "));
+  }
+  return lastStory;
+}
+
 module.exports = {
   createPureStory,
   createStoryOutline,
   generateVideoTemplate,
   reviseStoryDraft,
+  validateStoryWithLLM,
   getLlmConfig
 };
