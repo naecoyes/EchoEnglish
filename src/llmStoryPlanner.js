@@ -62,7 +62,7 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
   const factualMode = isFactualTemplate(template) || isFactualHistoryTopic(topic);
 
   const prompt = [
-    "Create a concise story plan for a fixed 15-minute English learning story video.",
+    "Create a story plan for an English learning story video.",
     "The user will review this plan before video generation.",
     template ? formatTemplateForPrompt(template) : "",
     factualMode
@@ -78,11 +78,19 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
     '  "mainCharacter": "string",',
     '  "setting": "string",',
     '  "visualStyle": "photorealistic cinematic still photo style",',
-    '  "storyBeats": ["10-14 short plot beats"],',
+    '  "targetScenes": number (15-30, based on topic complexity),',
+    '  "sentencesPerScene": number (3-6, based on content needs),',
+    '  "targetImages": number (20-50, about 2-3 per minute),',
+    '  "storyBeats": ["array of plot beats, number should match targetScenes"],',
     '  "vocabularyFocus": ["8-12 useful words or phrases"]',
     "}",
     `Topic: ${topic}`,
     `Target minutes: ${minutes}`,
+    "IMPORTANT: Determine the optimal structure based on the topic:",
+    "- Complex topics with many milestones: use more scenes (20-30) with fewer sentences each (3-4)",
+    "- Simple narrative topics: use fewer scenes (15-20) with more sentences each (4-6)",
+    "- Rich historical topics: use more images (3-4 per minute) for visual variety",
+    "- Keep the total duration around the target minutes when read slowly with pauses",
     "Keep the plan simple, emotional, visual, and suitable for beginner English learners.",
     "Use the web search context when the topic involves real people, companies, places, history, news, or culture.",
     "Do not invent factual claims that conflict with the search context.",
@@ -156,6 +164,12 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
 function buildStoryPrompt(topic, minutes, outline, template = null) {
   const factualMode = isFactualTemplate(template) || outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
   const podcastMode = template?.id === "podcast-dialogue";
+
+  // Get model-determined parameters from outline
+  const targetScenes = outline?.targetScenes || Math.max(12, Math.round(minutes * 1.1));
+  const sentencesPerScene = outline?.sentencesPerScene || 4;
+  const targetImages = outline?.targetImages || Math.round(minutes * 2.5);
+
   return [
     podcastMode
       ? "Write the complete source JSON for a two-host English learning podcast video."
@@ -169,12 +183,12 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
       ? "- Use real conversational turns, not mechanical one-sentence alternation. A host may speak 1-3 short sentences in a row before the other host responds."
       : "- The English narration must be continuous story prose in short beginner-friendly sentences.",
     podcastMode
-      ? "- For podcast mode, every scene still has exactly 4 sentences. Use varied turn patterns such as A,A,B,B or A,B,B,A when it sounds natural."
+      ? `- For podcast mode, every scene still has exactly ${sentencesPerScene} sentences. Use varied turn patterns such as A,A,B,B or A,B,B,A when it sounds natural.`
       : "",
-    "- Use 16-24 internal scenes. Each scene has exactly 4 English sentences.",
-    "- The story should naturally last about 15 minutes when read slowly with short pauses.",
-    "- The video should use 30-45 total background image beats, about 2-3 images per minute. Do not create one image per sentence.",
-    "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all 4 sentences; use two only for major visual changes.",
+    `- Use ${targetScenes} internal scenes. Each scene has exactly ${sentencesPerScene} English sentences.`,
+    `- The story should naturally last about ${minutes} minutes when read slowly with short pauses.`,
+    `- The video should use ${targetImages} total background image beats. Do not create one image per sentence.`,
+    "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all sentences; use two only for major visual changes.",
     "- Let the model decide image beat timing from the story flow by assigning sentenceStart and sentenceEnd for each imageBeat.",
     "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a concise photorealistic image prompt.",
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
@@ -200,7 +214,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "summary": "string",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
-    '    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": 3, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}',
+    `    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": ${sentencesPerScene - 1}, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}`,
     "  ]",
     "}",
     `Topic: ${topic}`,
@@ -303,7 +317,13 @@ function parseJsonText(text) {
 function normalizeOutline(input, topic, minutes, source = "local", searchContext = null, template = null) {
   const fallback = fallbackOutline(topic, minutes, template);
   const title = cleanText(input?.title) || fallback.title;
-  const beats = normalizeStringArray(input?.storyBeats, fallback.storyBeats).slice(0, 14);
+  const beats = normalizeStringArray(input?.storyBeats, fallback.storyBeats);
+
+  // Use model-determined values or defaults
+  const targetScenes = Number(input?.targetScenes) || Math.max(12, Math.round(minutes * 1.1));
+  const sentencesPerScene = Number(input?.sentencesPerScene) || 4;
+  const targetImages = Number(input?.targetImages) || Math.round(minutes * 2.5);
+
   return {
     title,
     genre: cleanText(input?.genre) || fallback.genre,
@@ -316,6 +336,9 @@ function normalizeOutline(input, topic, minutes, source = "local", searchContext
     storyBeats: beats.length >= 6 ? beats : fallback.storyBeats,
     vocabularyFocus: normalizeStringArray(input?.vocabularyFocus, fallback.vocabularyFocus).slice(0, 12),
     targetMinutes: Number(minutes || 15),
+    targetScenes,
+    sentencesPerScene,
+    targetImages,
     source,
     searchContext: searchContext || input?.searchContext || null,
     template: template || input?.template || null
@@ -325,14 +348,18 @@ function normalizeOutline(input, topic, minutes, source = "local", searchContext
 function normalizeStory(input, context) {
   const outline = normalizeOutline(context.outline || input, context.topic, context.targetDurationMinutes, context.source, null, context.template);
   const sections = Array.isArray(input?.sections) ? input.sections : [];
+
+  // Use outline's sentencesPerScene for validation (default 4)
+  const sentencesPerScene = outline.sentencesPerScene || 4;
+
   let normalizedSections = sections
     .map((section, index) => normalizeSection(section, index, input?.title || outline.title))
-    .filter((section) => section.sentences.length === 4 && section.translations.length === section.sentences.length)
-    .slice(0, 30);
+    .filter((section) => section.sentences.length >= 3 && section.sentences.length <= 6 && section.translations.length === section.sentences.length)
+    .slice(0, outline.targetScenes || 30);
   normalizedSections = deduplicateSections(normalizedSections);
   const generationWarnings = [];
-  const targetMinutes = context.targetDurationMinutes || 15;
-  const targetScenes = Math.max(12, Math.round(targetMinutes * 1.1));
+  const targetScenes = outline.targetScenes || Math.max(12, Math.round((context.targetDurationMinutes || 15) * 1.1));
+  const targetImages = outline.targetImages || Math.round((context.targetDurationMinutes || 15) * 2.5);
 
   if (normalizedSections.length < 8) {
     return fallbackStoryFromOutline(outline, context);
@@ -344,9 +371,9 @@ function normalizeStory(input, context) {
   }
 
   const imageBeatCount = countImageBeats(normalizedSections);
-  if (imageBeatCount < 30) {
-    normalizedSections = ensureImageBeatTarget(normalizedSections, outline, 30);
-    generationWarnings.push(`LLM returned ${imageBeatCount} image beats; EchoEnglish split story scenes into ${countImageBeats(normalizedSections)} visual beats for the 2-3 images per minute target.`);
+  if (imageBeatCount < targetImages) {
+    normalizedSections = ensureImageBeatTarget(normalizedSections, outline, targetImages);
+    generationWarnings.push(`LLM returned ${imageBeatCount} image beats; EchoEnglish split story scenes into ${countImageBeats(normalizedSections)} visual beats for the target.`);
   }
 
   return enrichStoryVocabulary({
