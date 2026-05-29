@@ -582,56 +582,68 @@ function renderPodcastBottomText(frame, textX, captionY, captionH, layout) {
 
 function renderCoverOverlay(story, frame, layout) {
   const { W, H } = layout;
-  const titleLines = wrapWords(story.title || frame.title || "English Story", 20).slice(0, 3);
-  const titleFont = titleLines.length > 1 ? 58 : 66;
-  const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", 50).slice(0, 2);
   const gradeLevel = estimateUsGradeLevel(story);
-  const lx = Math.round(W * 0.13);
-  const panelW = Math.round(W * 0.875);
-  const panelX = Math.round(W * 0.0625);
-  const panelH = Math.round(H * 0.72);
-  const panelY = Math.round(H * 0.139);
-  const innerPad = Math.round(W * 0.017);
-  const titleWrap = layout.isPortrait ? 16 : 20;
-  const titleLinesP = wrapWords(story.title || frame.title || "English Story", titleWrap).slice(0, 3);
-  const titleFontP = titleLinesP.length > 1 ? (layout.isPortrait ? 48 : 58) : (layout.isPortrait ? 54 : 66);
-  const summaryWrap = layout.isPortrait ? 36 : 50;
-  const summaryLinesP = wrapMixed(story.summary || "Practice listening, reading, and speaking with a clear English story.", summaryWrap).slice(0, 2);
-  const pbx = Math.round(W * 0.56);
-  const pbw = Math.round(W * 0.17);
-  const pbh = layout.isPortrait ? Math.round(W * 0.24) : 260;
-  const pby = layout.isPortrait ? Math.round(H * 0.28) : 300;
-  const pbCx = pbx + Math.round(pbw / 2);
-  const triY1 = pby + Math.round(pbh * 0.32);
-  const triY2 = pby + Math.round(pbh * 0.62);
-  const triX1 = pbCx - Math.round(pbw * 0.18);
-  const triX2 = pbCx + Math.round(pbw * 0.18);
-  const triX3 = pbCx + Math.round(pbw * 0.32);
-  const listenY = pby + pbh + Math.round(H * 0.038);
-  const listenSubY = listenY + Math.round(H * 0.04);
-  const practiceY = layout.isPortrait ? Math.round(H * 0.58) : 670;
-  const summaryStartY = practiceY + Math.round(H * 0.045);
-  const diffY = summaryStartY + summaryLinesP.length * Math.round(H * 0.032) + Math.round(H * 0.018);
-  const diffZhY = diffY + Math.round(H * 0.035);
+
+  // Responsive dimensions
+  const titleWrap = layout.isPortrait ? 18 : 24;
+  const titleLines = wrapWords(story.title || frame.title || "English Story", titleWrap).slice(0, 3);
+  const summaryWrap = layout.isPortrait ? 32 : 44;
+  const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with clear English.", summaryWrap).slice(0, 2);
+
+  // Layout positions
+  const centerX = Math.round(W / 2);
+  const contentX = layout.isPortrait ? Math.round(W * 0.1) : Math.round(W * 0.12);
+  const contentW = layout.isPortrait ? Math.round(W * 0.8) : Math.round(W * 0.76);
+
+  // Title area
+  const titleFontSize = layout.isPortrait ? (titleLines.length > 1 ? 44 : 52) : (titleLines.length > 1 ? 56 : 68);
+  const titleLineHeight = Math.round(titleFontSize * 1.3);
+  const titleStartY = layout.isPortrait ? Math.round(H * 0.28) : Math.round(H * 0.3);
+
+  // Play button - centered
+  const btnSize = layout.isPortrait ? Math.round(W * 0.22) : Math.round(W * 0.12);
+  const btnY = layout.isPortrait ? Math.round(H * 0.52) : Math.round(H * 0.55);
+  const btnRx = Math.round(btnSize * 0.28);
+
+  // Triangle play icon
+  const triSize = Math.round(btnSize * 0.32);
+  const triLeft = centerX - Math.round(triSize * 0.4);
+  const triRight = centerX + Math.round(triSize * 0.5);
+  const triTop = btnY + Math.round(btnSize * 0.5) - Math.round(triSize * 0.5);
+  const triBottom = btnY + Math.round(btnSize * 0.5) + Math.round(triSize * 0.5);
+
+  // Text below button
+  const listenY = btnY + btnSize + Math.round(H * 0.04);
+  const summaryY = listenY + Math.round(H * 0.06);
+  const diffY = summaryY + summaryLines.length * Math.round(H * 0.035) + Math.round(H * 0.02);
+
   return `
-  <rect x="0" y="0" width="${W}" height="${H}" fill="#020817" opacity="0.42"/>
-  <rect x="0" y="0" width="${W}" height="${H}" fill="#04111f" opacity="0.2"/>
-  <rect x="${Math.round(W * 0.042)}" y="${Math.round(H * 0.102)}" width="${panelW}" height="${panelH}" rx="58" fill="#020817" opacity="0.34"/>
-  <rect x="${panelX}" y="${panelY}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 2}" rx="54" fill="url(#coverPanel)" opacity="0.88"/>
-  <rect x="${panelX}" y="${panelY}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 2}" rx="54" fill="#ffffff" opacity="0.14"/>
-  <rect x="${panelX + innerPad}" y="${panelY + innerPad * 1.5}" width="${panelW - innerPad * 4}" height="${panelH - innerPad * 5}" rx="42" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.25"/>
-  <rect x="${lx}" y="${Math.round(H * 0.218)}" width="${Math.round(W * 0.172)}" height="58" rx="29" fill="#0b84ff" opacity="0.95"/>
-  <text x="${lx + Math.round(W * 0.086)}" y="${Math.round(H * 0.254)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="27" font-weight="900" letter-spacing="4" fill="#ffffff">ECHOENGLISH</text>
-  <text x="${lx}" y="${Math.round(H * 0.329)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="48" font-weight="900" fill="#0f172a">今天的故事</text>
-  ${titleLinesP.map((line, index) => `<text x="${lx}" y="${Math.round(H * 0.421) + index * Math.round(H * 0.065)}" font-family="Arial, sans-serif" font-size="${titleFontP}" font-weight="950" fill="#071126">${escapeXml(line)}</text>`).join("\n  ")}
-  <rect x="${pbx}" y="${pby}" width="${pbw}" height="${pbh}" rx="64" fill="#0b84ff" opacity="0.92"/>
-  <polygon points="${triX1},${triY1} ${triX1},${triY2} ${triX3},${Math.round((triY1 + triY2) / 2)}" fill="#ffffff" opacity="0.96"/>
-  <text x="${pbCx}" y="${listenY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="950" fill="#0f172a">Listen &amp; Shadow</text>
-  <text x="${pbCx}" y="${listenSubY}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="850" fill="#1d4ed8">边听边读 · 口语跟读</text>
-  <text x="${lx}" y="${practiceY}" font-family="Arial, sans-serif" font-size="31" font-weight="900" fill="#1d4ed8">Practice listening, reading, and speaking.</text>
-  ${summaryLinesP.map((line, index) => `<text x="${lx}" y="${summaryStartY + index * Math.round(H * 0.032)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="25" font-weight="750" fill="#334155">${escapeXml(line)}</text>`).join("\n  ")}
-  <text x="${lx}" y="${diffY}" font-family="Arial, sans-serif" font-size="27" font-weight="900" fill="#0f172a">Difficulty: about U.S. elementary ${escapeXml(gradeLevel)} English</text>
-  <text x="${lx}" y="${diffZhY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="23" font-weight="800" fill="#475569">难度约为${escapeXml(formatChineseGradeLevel(gradeLevel))}英文阅读水平</text>`;
+  <!-- Semi-transparent overlay -->
+  <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.35"/>
+
+  <!-- Main content card -->
+  <rect x="${contentX - 20}" y="${titleStartY - 60}" width="${contentW + 40}" height="${diffY - titleStartY + 100}" rx="32" fill="#fff" opacity="0.92"/>
+
+  <!-- Brand badge -->
+  <rect x="${contentX}" y="${titleStartY - 45}" width="180" height="42" rx="21" fill="#3b82f6"/>
+  <text x="${contentX + 90}" y="${titleStartY - 18}" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="800" letter-spacing="3" fill="#fff">ECHOENGLISH</text>
+
+  <!-- Title -->
+  ${titleLines.map((line, i) => `<text x="${centerX}" y="${titleStartY + i * titleLineHeight + titleFontSize}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${titleFontSize}" font-weight="900" fill="#1e293b">${escapeXml(line)}</text>`).join("\n  ")}
+
+  <!-- Play button -->
+  <rect x="${centerX - btnSize / 2}" y="${btnY}" width="${btnSize}" height="${btnSize}" rx="${btnRx}" fill="#3b82f6"/>
+  <polygon points="${triLeft},${triTop} ${triLeft},${triBottom} ${triRight},${Math.round((triTop + triBottom) / 2)}" fill="#fff"/>
+
+  <!-- Listen text -->
+  <text x="${centerX}" y="${listenY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="800" fill="#1e293b">Listen &amp; Shadow</text>
+  <text x="${centerX}" y="${listenY + 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="700" fill="#64748b">边听边读 · 口语跟读</text>
+
+  <!-- Summary -->
+  ${summaryLines.map((line, i) => `<text x="${centerX}" y="${summaryY + i * Math.round(H * 0.035)}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="600" fill="#475569">${escapeXml(line)}</text>`).join("\n  ")}
+
+  <!-- Difficulty -->
+  <text x="${centerX}" y="${diffY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#94a3b8">Difficulty: U.S. Grade ${escapeXml(gradeLevel)}</text>`;
 }
 
 function renderVocabularyReviewOverlay(frame, layout) {
@@ -737,15 +749,15 @@ function renderPodcastVocabularyOverlay(frame, layout) {
 
 function renderBottomText(frame, layout) {
   const { W, CAPTION_Y, CAPTION_H } = layout;
-  const wrapLen = layout.isPortrait ? 36 : 46;
-  const chineseWrapLen = layout.isPortrait ? 32 : 40;
-  const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 2);
-  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
-  const englishFont = englishLines.length > 1 ? 48 : 52;
-  const chineseFont = chineseLines.length > 1 ? 30 : 33;
-  const englishLineHeight = 52;
-  const chineseLineHeight = 38;
-  const gap = 42;
+  const wrapLen = layout.isPortrait ? 42 : 52;
+  const chineseWrapLen = layout.isPortrait ? 36 : 44;
+  const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 3);
+  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 3);
+  const englishFont = englishLines.length > 2 ? 42 : englishLines.length > 1 ? 48 : 52;
+  const chineseFont = chineseLines.length > 2 ? 26 : chineseLines.length > 1 ? 30 : 33;
+  const englishLineHeight = englishLines.length > 2 ? 46 : 52;
+  const chineseLineHeight = chineseLines.length > 2 ? 34 : 38;
+  const gap = englishLines.length > 2 || chineseLines.length > 2 ? 32 : 42;
   const englishBlockHeight = englishFont + Math.max(0, englishLines.length - 1) * englishLineHeight;
   const chineseBlockHeight = chineseFont + Math.max(0, chineseLines.length - 1) * chineseLineHeight;
   const totalTextHeight = englishBlockHeight + gap + chineseBlockHeight;

@@ -12,7 +12,7 @@ const { generateStoryWorkflow, getUniqueImageScenes } = require("./storyWorkflow
 const { composeStoryVideo } = require("./storyVideoComposer");
 const { generateImages: generateMiniMaxImages } = require("./minimaxImage");
 const { generateImages: generateGoogleImages } = require("./googleImage");
-const { createPureStory, createStoryOutline, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
+const { createPureStory, createStoryOutline, generateVideoTemplate, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
 const { renderMarkdown } = require("./renderers");
 const { MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
 const {
@@ -33,7 +33,7 @@ const {
 } = require("./settingsStore");
 const { listStoryPresets } = require("./storyPresets");
 const { searchTopicContext } = require("./tavilySearch");
-const { getVideoTemplate, listVideoTemplates } = require("./videoTemplates");
+const { getVideoTemplate, listVideoTemplates, generateTemplateFromTopic } = require("./videoTemplates");
 const { slugify, ensureDir } = require("./utils");
 const { classifyError } = require("./errorClassifier");
 const { createStages, firstFailedStage, markStage, summarizeStageCounts } = require("./jobStages");
@@ -219,7 +219,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
       const minutes = clampMinutes(body.minutes);
-      const template = getVideoTemplate(body.templateId || body.template?.id);
+      const template = body.templateId || body.template?.id
+        ? getVideoTemplate(body.templateId || body.template?.id)
+        : await generateVideoTemplate({ topic, minutes });
       const { outline, searchContext } = await buildSearchBackedOutline(topic, minutes, template);
       const draft = await createPureStory({
         topic,
@@ -245,7 +247,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const topic = String(body.topic || body.draft?.topic || "Story Video").trim() || "Story Video";
       const minutes = clampMinutes(body.minutes);
-      const template = getVideoTemplate(body.templateId || body.template?.id || body.draft?.template?.id);
+      const template = body.templateId || body.template?.id || body.draft?.template?.id
+        ? getVideoTemplate(body.templateId || body.template?.id || body.draft?.template?.id)
+        : await generateVideoTemplate({ topic, minutes });
       const draft = await reviseStoryDraft({
         topic,
         targetDurationMinutes: minutes,
@@ -274,7 +278,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
       const minutes = clampMinutes(body.minutes);
-      const template = getVideoTemplate(body.templateId || body.template?.id);
+      const template = body.templateId || body.template?.id
+        ? getVideoTemplate(body.templateId || body.template?.id)
+        : await generateVideoTemplate({ topic, minutes });
       const { outline, searchContext } = await buildSearchBackedOutline(topic, minutes, template);
       return sendJson(res, {
         outline,
@@ -337,7 +343,9 @@ async function startStoryJob(res, body) {
   const logs = [];
   const confirmedOutline = normalizeOutlineInput(body.outline);
   const confirmedDraft = normalizeStoryDraftInput(body.storyDraft);
-  const template = getVideoTemplate(body.templateId || body.template?.id || confirmedDraft?.template?.id || confirmedOutline?.template?.id);
+  const template = body.templateId || body.template?.id || confirmedDraft?.template?.id || confirmedOutline?.template?.id
+    ? getVideoTemplate(body.templateId || body.template?.id || confirmedDraft?.template?.id || confirmedOutline?.template?.id)
+    : await generateVideoTemplate({ topic, minutes });
   const job = {
     id,
     status: "queued",
@@ -437,7 +445,9 @@ async function runStoryJobAsync(job) {
 
       const ttsProvider = settings.media?.ttsProvider || (settings.provider === "xiaomi" ? "xiaomi" : "minimax");
       const imageMode = settings.media?.imageProvider || "minimax";
-      const template = getVideoTemplate(job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id);
+      const template = job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id
+        ? getVideoTemplate(job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id)
+        : await generateVideoTemplate({ topic: job.topic, minutes: job.minutes });
       const confirmedDraft = normalizeStoryDraftInput(job.request?.storyDraft);
       let storyOutline = normalizeOutlineInput(job.request?.outline);
 

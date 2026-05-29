@@ -224,7 +224,7 @@ function buildSafeImagenFallbackPrompt(prompt) {
     safeMoment ? `Story moment: ${safeMoment}.` : "",
     "Use generic adult people only, photographed from behind or at a distance, with non-identifiable faces.",
     "Show objects, workspace, products, tools, buildings, or public-event atmosphere instead of recognizable public figures.",
-    "No real logos, no readable brand marks, no text, no subtitles, no watermark, no UI, no celebrity likeness, no poster, no slide design, no black lower-third bar, no placeholder words like Your Text.",
+    "No real logos, no readable brand marks, no text, no subtitles, no watermark, no celebrity likeness, no poster, no slide design, no black lower-third bar, no placeholder words like Your Text. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment.",
     "Cinematic natural light, 35mm documentary photo style, clear composition, natural uncluttered bottom area with real scene content."
   ].filter(Boolean).join(" "));
 }
@@ -391,7 +391,7 @@ function buildPrompt(scene) {
     scene.visualStyle ? `Visual style: ${scene.visualStyle}.` : "",
     `Scene: ${scene.visual || "clear documentary story moment"}.`,
     "Use realistic documentary photography, one clear focal subject, real location, motivated cinematic light, 35mm lens look, high detail, natural color grade.",
-    "Keep the bottom area natural and uncluttered with real scene content. No text, no readable signs, no subtitles, no logos, no watermark, no UI, no black lower-third bar, no placeholder words like Your Text, no cartoon, no vector art, no PPT slide."
+    "Keep the bottom area natural and uncluttered with real scene content. No text, no readable signs, no subtitles, no logos, no watermark, no black lower-third bar, no placeholder words like Your Text, no cartoon, no vector art, no PPT slide. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment."
   ].filter(Boolean).join(" ");
 }
 

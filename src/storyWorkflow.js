@@ -723,7 +723,7 @@ function buildBeatImagePrompt(story, section, beatIndex) {
     "Camera direction: realistic documentary photography, 35mm lens look, subtle depth of field, natural perspective, professional lighting, detailed foreground and background.",
     "Composition: one clear focal subject, strong visual story action, natural uncluttered bottom area with real scene content, no artificial lower-third panel.",
     "Image quality: high detail, sharp but natural, cinematic color grade, realistic skin/material texture, no black frames, no abstract gradients.",
-    "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no UI, no black lower-third bar, no placeholder words like Your Text, no slide deck, no cartoon, no flat vector illustration.",
+    "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no black lower-third bar, no placeholder words like Your Text, no slide deck, no cartoon, no flat vector illustration. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment.",
     `Distinctness: make this beat visually different from nearby beats by changing camera angle, distance, subject pose, object focus, or lighting. Beat ${beatIndex + 1}.`
   ];
   return parts.filter(Boolean).join(" ");

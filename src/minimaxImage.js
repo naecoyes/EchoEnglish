@@ -239,10 +239,19 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
 }
 
 async function findExistingImage(imagesDir, sceneId) {
-  const candidates = [".png", ".jpg", ".jpeg", ".webp"].map((ext) => path.join(imagesDir, `${sceneId}${ext}`));
-  for (const candidate of candidates) {
+  // First check for direct named files (legacy format)
+  const directCandidates = [".png", ".jpg", ".jpeg", ".webp"].map((ext) => path.join(imagesDir, `${sceneId}${ext}`));
+  for (const candidate of directCandidates) {
     if (await pathExists(candidate)) return candidate;
   }
+
+  // Then check for batch files (new format: sceneId_batch_01.ext)
+  const batchExtensions = [".jpg", ".png", ".jpeg", ".webp"];
+  for (const ext of batchExtensions) {
+    const batchPath = path.join(imagesDir, `${sceneId}_batch_01${ext}`);
+    if (await pathExists(batchPath)) return batchPath;
+  }
+
   return null;
 }
 
@@ -313,7 +322,7 @@ function prepareMiniMaxPrompt(scene) {
     scene.moment ? `Moment: ${limitPrompt(scene.moment, 280)}.` : "",
     "Real documentary photography, one clear focal subject, believable real-world location, natural human scale, 35mm lens look, cinematic depth of field, professional lighting, realistic texture.",
     "Keep the bottom area natural and uncluttered with real scene content.",
-    "No text, no readable signs, no subtitles, no logos, no watermark, no UI, no black lower-third bar, no placeholder words like Your Text, no cartoon, no vector art, no PPT slide."
+    "No text, no readable signs, no subtitles, no logos, no watermark, no black lower-third bar, no placeholder words like Your Text, no cartoon, no vector art, no PPT slide. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment."
   ].filter(Boolean).join(" ");
 
   if (compact.length <= MAX_PROMPT_CHARS) return compact;

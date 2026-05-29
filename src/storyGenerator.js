@@ -563,7 +563,7 @@ function buildImagePrompt(storyTitle, visual, variantIndex = 0, beatIndex = 0, s
     beatSentences.length ? `Moment to depict: ${beatSentences.join(" ")}` : "",
     variantDirectives[variantIndex] || variantDirectives[0],
     "Natural light, real location, realistic people, clean composition, background image only.",
-    "No text, no subtitles, no captions, no watermark, no logo, no UI elements."
+    "No text, no subtitles, no captions, no watermark, no logo. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment."
   ].filter(Boolean).join(" ");
 }
 

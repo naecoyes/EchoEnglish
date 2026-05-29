@@ -2,6 +2,58 @@ const { DEFAULT_LLM, getEffectiveSettings } = require("./settingsStore");
 const { formatSearchContext } = require("./tavilySearch");
 const { enrichStoryVocabulary } = require("./vocabularyTools");
 
+async function generateVideoTemplate({ topic, minutes = 15, searchContext = null }) {
+  const config = await getLlmConfig();
+  if (!config.apiKey) {
+    throw new Error("LLM API key is required for template generation. Open Settings and save an LLM API key.");
+  }
+
+  const prompt = [
+    "Generate a video template configuration for an English learning story video.",
+    "The template should define the structure, style, and content guidelines for the video.",
+    "Return only valid JSON with this exact shape:",
+    "{",
+    '  "id": "auto-generated",',
+    '  "title": "descriptive template title",',
+    '  "contentMode": "factual-documentary or fictional-story",',
+    '  "summary": "1-2 sentence description of what this video template covers",',
+    '  "structureRules": "detailed guidance on how to structure the story (opening, middle, ending)",',
+    '  "visualStyle": "detailed visual style description for image generation",',
+    '  "vocabularyFocus": ["8-12 domain-specific vocabulary words"],',
+    '  "searchHint": "keywords for web search to find factual information",',
+    '  "draftGuidance": "specific instructions for writing the story content"',
+    "}",
+    `Topic: ${topic}`,
+    `Target minutes: ${minutes}`,
+    "Guidelines:",
+    "- If the topic is about a real company, person, product, or historical event, use contentMode: factual-documentary",
+    "- If the topic is fictional or generic, use contentMode: fictional-story",
+    "- structureRules should provide a clear narrative arc appropriate for the topic",
+    "- visualStyle should be specific enough for AI image generation (photorealistic, cinematic, etc.)",
+    "- vocabularyFocus should include B1-level words relevant to the topic domain",
+    "- searchHint should help find accurate information for factual topics",
+    "- draftGuidance should ensure the story is appropriate for English learners",
+    searchContext ? `Web search context for reference:\n${formatSearchContext(searchContext)}` : ""
+  ].filter(Boolean).join("\n");
+
+  const payload = await callChatJson(config, prompt, 1500);
+
+  // Validate and normalize the generated template
+  const template = {
+    id: payload.id || "auto-generated",
+    title: cleanText(payload.title) || "Generated Story",
+    contentMode: payload.contentMode === "factual-documentary" ? "factual-documentary" : "fictional-story",
+    summary: cleanText(payload.summary) || `A story about ${topic}.`,
+    structureRules: cleanText(payload.structureRules) || "Follow a clear narrative structure with beginning, middle, and end.",
+    visualStyle: cleanText(payload.visualStyle) || "photorealistic cinematic still photo, natural lighting, clear composition",
+    vocabularyFocus: Array.isArray(payload.vocabularyFocus) ? payload.vocabularyFocus.slice(0, 12) : ["story", "character", "scene", "moment", "detail", "emotion", "choice", "result"],
+    searchHint: cleanText(payload.searchHint) || `${topic} facts timeline history`,
+    draftGuidance: cleanText(payload.draftGuidance) || "Keep sentences simple and clear for beginner English learners."
+  };
+
+  return template;
+}
+
 async function createStoryOutline({ topic, minutes, searchContext = null, template = null }) {
   const config = await getLlmConfig();
   if (!config.apiKey) {
@@ -128,7 +180,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
     "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
     "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition with a natural, uncluttered bottom area.",
-    "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no UI, no black lower-third bar, no placeholder words like Your Text.",
+    "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no black lower-third bar, no placeholder words like Your Text. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment, not mockups or slides.",
     "- Avoid repeated generic wording. Each scene prompt must have a distinct place, object, camera angle, or action.",
     isPersonFocusedTopic(topic, template)
       ? "- Person-focused mode: keep the same public subject visually consistent. Prefer one-person portraits, public-stage photos, offices, documents, symbolic objects, and context shots. Do not generate multiple unrelated faces or group portraits unless the facts require a public group scene."
@@ -286,10 +338,9 @@ function normalizeStory(input, context) {
     return fallbackStoryFromOutline(outline, context);
   }
 
+  // Don't force-fill to target scenes - use what LLM generated
   if (normalizedSections.length < targetScenes) {
-    const receivedCount = normalizedSections.length;
-    normalizedSections = completeSectionsFromOutline(normalizedSections, outline, targetScenes);
-    generationWarnings.push(`LLM returned ${receivedCount} valid scenes; EchoEnglish auto-filled ${normalizedSections.length - receivedCount} outline-based scenes for the ${targetMinutes}-minute target.`);
+    generationWarnings.push(`LLM returned ${normalizedSections.length} scenes (target was ${targetScenes}). Using all generated scenes without filling.`);
   }
 
   const imageBeatCount = countImageBeats(normalizedSections);
@@ -492,11 +543,13 @@ function parseSpeakerSentence(value) {
 
 function fallbackStoryFromOutline(outlineInput, context) {
   const outline = normalizeOutline(outlineInput, context.topic, context.targetDurationMinutes, "local", null, context.template);
-  const targetScenes = 29;
+  const beats = outline.storyBeats || [];
   const sections = [];
-  for (let index = 0; index < targetScenes; index += 1) {
-    const beat = outline.storyBeats[index % outline.storyBeats.length];
-    const nextBeat = outline.storyBeats[(index + 1) % outline.storyBeats.length];
+
+  // Generate scenes from beats without repeating
+  for (let index = 0; index < beats.length; index += 1) {
+    const beat = beats[index];
+    const nextBeat = beats[index + 1] || beats[beats.length - 1];
     const scene = fallbackScene(outline, beat, nextBeat, index);
     sections.push(scene);
   }
@@ -679,16 +732,32 @@ function fallbackOutline(topic, minutes, template = null) {
     mainCharacter: factualMode ? "The company and its public leadership" : "Emma",
     setting: factualMode ? "public events, offices, factories, and launch stages" : chooseSetting(title),
     visualStyle: cleanText(template?.visualStyle) || "photorealistic cinematic still photo, natural light, realistic people, clear story emotion",
-    storyBeats: [
-      factualMode ? "The public plan is announced with a clear date." : "The main character notices an unusual detail.",
-      factualMode ? "A new business unit or project team is formed." : "A small question appears in an ordinary place.",
-      factualMode ? "The company invests resources and begins research and development." : "The character follows the first clue carefully.",
-      factualMode ? "The first technology or product preview is shown to the public." : "A helpful person shares a simple idea.",
-      factualMode ? "The factory or production plan becomes visible." : "The weather or setting changes the plan.",
-      factualMode ? "The first product is officially launched." : "The character makes a careful choice.",
-      factualMode ? "Early orders, deliveries, or public reactions show market interest." : "A hidden meaning becomes easier to see.",
-      factualMode ? "The company expands the roadmap and prepares the next milestone." : "The problem grows for a short time.",
-      factualMode ? "The story closes with the project becoming part of a larger strategy." : "The character remembers a kind lesson."
+    storyBeats: factualMode ? [
+      "The founders meet and discover a shared vision for innovation.",
+      "They work in a small garage or office, building the first prototype.",
+      "The team faces early technical challenges and solves them creatively.",
+      "The first product launch creates excitement in the market.",
+      "Early customers provide feedback that shapes the next version.",
+      "The company secures funding from investors who believe in the vision.",
+      "A major partnership or deal accelerates growth significantly.",
+      "The company expands internationally, entering new markets.",
+      "New product lines are introduced to meet growing demand.",
+      "The company reaches a major milestone in revenue or users.",
+      "Leadership changes bring fresh strategy and direction.",
+      "The company invests heavily in research and development.",
+      "A crisis or challenge tests the company's resilience.",
+      "The company adapts and emerges stronger than before.",
+      "Today, the company stands as a leader in its industry."
+    ] : [
+      "The main character notices an unusual detail.",
+      "A small question appears in an ordinary place.",
+      "The character follows the first clue carefully.",
+      "A helpful person shares a simple idea.",
+      "The weather or setting changes the plan.",
+      "The character makes a careful choice.",
+      "A hidden meaning becomes easier to see.",
+      "The problem grows for a short time.",
+      "The character remembers a kind lesson."
     ],
     vocabularyFocus: Array.isArray(template?.vocabularyFocus) ? template.vocabularyFocus : ["notice", "carefully", "choice", "clue", "quiet", "remember", "helpful", "change", "answer", "meaning"],
     targetMinutes: Number(minutes || 15),
@@ -739,7 +808,7 @@ function buildPhotoPrompt(storyTitle, visual, sentences = []) {
     "Camera: 35mm or 50mm lens look, cinematic depth of field, high dynamic range, realistic texture, no oversaturated fantasy colors.",
     "Composition: strong upper and middle frame detail, natural uncluttered bottom area, no artificial lower-third panel or text banner.",
     "Lighting: natural or motivated cinematic light, soft contrast, realistic shadows, professional production still quality.",
-    "No text, no subtitles, no captions, no watermark, no logo, no UI elements, no black lower-third bar, no placeholder words like Your Text, no cartoon, no flat vector art, no slide design."
+    "No text, no subtitles, no captions, no watermark, no logo, no black lower-third bar, no placeholder words like Your Text, no cartoon, no flat vector art, no slide design. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment."
   ].filter(Boolean).join(" ");
 }
 
@@ -839,6 +908,7 @@ function articleFor(word) {
 module.exports = {
   createPureStory,
   createStoryOutline,
+  generateVideoTemplate,
   reviseStoryDraft,
   getLlmConfig
 };
