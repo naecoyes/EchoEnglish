@@ -1,5 +1,13 @@
 # EchoEnglish
 
+<p align="center">
+  <img src="docs/screenshots/logo.svg" alt="EchoEnglish Logo" width="200">
+</p>
+
+<p align="center">
+  <a href="README_CN.md">中文文档</a>
+</p>
+
 EchoEnglish is a local AI workflow for generating English shadowing videos from any topic. It creates a reviewed script, sentence-level narration, story-beat scene images, bilingual captions, vocabulary notes, background music, YouTube publishing copy, and a final MP4.
 
 The dashboard is designed for long 15-minute learning videos, with recoverable generation stages so API quota errors, network failures, or service restarts do not waste completed audio, images, or music.
@@ -80,6 +88,19 @@ EchoEnglish supports multiple video modes through templates:
 | Historical Event Documentary | factual documentary | Real events and historical timelines |
 | Future Imagination Story | fictional story | Near-future learning stories |
 | Podcast Conversation | two-host dialogue | Two-host explainer videos with role-based voices |
+
+### AI Template Generation
+
+When no template is specified, EchoEnglish automatically generates a custom video template using AI based on the topic. The AI analyzes the topic and creates:
+
+- **Content mode**: Factual documentary or fictional story
+- **Structure rules**: Narrative arc and story flow guidance
+- **Visual style**: Image generation style and mood
+- **Vocabulary focus**: Domain-specific B1-level words
+- **Search keywords**: For factual context retrieval
+- **Draft guidance**: Writing instructions for English learners
+
+This allows users to simply enter a topic (e.g., "Google Company History") and get a complete, customized video template without manual configuration.
 
 Factual templates use search-backed context and are instructed not to invent fictional protagonists, employees, private scenes, or unsupported claims.
 
@@ -271,6 +292,23 @@ When a job fails because of rate limits, quota, timeouts, or service restart, op
 
 If a server restart leaves a job marked as `running`, EchoEnglish converts it to a recoverable interrupted job on the next load.
 
+### Image Reuse
+
+Generated images are automatically cached and reused when re-rendering or continuing jobs. The system supports both single images and batch images (for scenes with people):
+
+- Single images: `scene-001-a-01.jpg`
+- Batch images: `scene-001-a-01_batch_01.jpg`, `scene-001-a-01_batch_02.jpg`
+
+When continuing a job, existing images are detected and reused without regenerating, saving API calls and time.
+
+### Content Quality
+
+Recent improvements ensure higher quality content:
+
+- **No duplicate milestones**: The system no longer forces scenes to reach a target count, preventing repetitive milestone templates in longer videos.
+- **AI-generated templates**: Custom templates are created based on the topic, providing more relevant structure and vocabulary.
+- **Better factual content**: Documentary-style videos use search-backed context with real dates, events, and public figures.
+
 ## Recent Outputs
 
 The Recent page is a local output manager:
@@ -313,13 +351,28 @@ The YouTube copy is viewable in the Preview page via the "Show YouTube Copy" but
 
 Generated videos include:
 
-- YouTube-style title cover.
+- Modern, clean title cover with centered layout and blue accent.
 - Intro narration describing the topic, practice goal, and level.
-- Bilingual captions with English emphasized and Chinese smaller.
+- Bilingual captions with English emphasized and Chinese smaller (up to 3 lines for long sentences).
 - Current-sentence vocabulary card.
 - Orange highlight for matching keywords.
 - Final vocabulary review table with word, phonetic spelling, and Chinese meaning.
 - Podcast mode with two-host visual layout, two voice roles, and dialogue captions.
+
+### Subtitle Display
+
+Subtitles support up to 3 lines for long sentences with responsive text wrapping:
+- Portrait mode: 42 characters per line
+- Landscape mode: 52 characters per line
+- Automatic font size adjustment for 3-line display
+
+### Cover Design
+
+The video cover features a clean, modern design with:
+- White card background for better readability
+- Centered blue play button with proper aspect ratio
+- Clear typography hierarchy (brand badge, title, description)
+- Responsive layout for both portrait and landscape modes
 
 Use Preview -> Re-render Video UI to regenerate only slides and MP4 from existing script/audio/images/music. This does not call LLM, TTS, image, or music APIs.
 

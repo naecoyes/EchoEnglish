@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="EchoEnglish logo">
+  <defs>
+    <linearGradient id="glass" x1="100" y1="76" x2="412" y2="436" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d8ecff"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="160" y1="146" x2="340" y2="366" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0a84ff"/>
+      <stop offset="1" stop-color="#0057ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-18%" y="-16%" width="136%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#0a84ff" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="#f5f9ff"/>
+  <circle cx="256" cy="256" r="188" fill="url(#glass)" stroke="#ffffff" stroke-width="16" filter="url(#shadow)"/>
+  <path d="M174 162h152v54H236v52h80v52h-80v30h96v54H174V162Z" fill="url(#blue)"/>
+  <path d="M356 206c22 24 34 52 34 84s-12 60-34 84" fill="none" stroke="#0a84ff" stroke-width="26" stroke-linecap="round"/>
+  <path d="M402 166c34 36 52 78 52 124s-18 88-52 124" fill="none" stroke="#0a84ff" stroke-width="18" stroke-linecap="round" opacity=".35"/>
+  <path d="M138 112c30-22 70-36 112-36" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" opacity=".75"/>
+</svg>
