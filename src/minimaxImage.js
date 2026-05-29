@@ -128,7 +128,8 @@ async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, mod
 
 async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
   let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await updateImageManifest(outputDir, scene.id, {
       status: "running",
       attempts: attempt,
@@ -160,6 +161,15 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
         quality: error.quality || null
       });
       await deleteSceneImage(imagesDir, scene.id);
+
+      // For timeout errors, wait before retrying
+      if (error.message.includes("timeout") || error.message.includes("rpc timeout")) {
+        const waitMs = Math.min(30000, 5000 * attempt);
+        console.log(`[MiniMax Image] Timeout on attempt ${attempt}/${maxAttempts} for ${scene.id}. Waiting ${waitMs/1000}s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       if (!isImageQualityError(error)) throw error;
     }
   }
@@ -168,7 +178,8 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
 
 async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize }) {
   let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await updateImageManifest(outputDir, scene.id, {
       status: "running",
       attempts: attempt,
@@ -232,6 +243,15 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
         quality: error.quality || null
       });
       await deleteSceneImage(imagesDir, scene.id);
+
+      // For timeout errors, wait before retrying
+      if (error.message.includes("timeout") || error.message.includes("rpc timeout")) {
+        const waitMs = Math.min(30000, 5000 * attempt);
+        console.log(`[MiniMax Image] Timeout on attempt ${attempt}/${maxAttempts} for ${scene.id}. Waiting ${waitMs/1000}s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       if (!isImageQualityError(error)) throw error;
     }
   }

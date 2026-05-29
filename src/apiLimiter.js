@@ -2,8 +2,8 @@ const queues = new Map();
 const lastCallAt = new Map();
 
 const DEFAULT_POLICIES = {
-  "minimax:tts": { minIntervalMs: 3500, retries: 5, timeoutMs: 90000 },
-  "minimax:image": { minIntervalMs: 1800, retries: 5, timeoutMs: 120000 },
+  "minimax:tts": { minIntervalMs: 3500, retries: 5, timeoutMs: 120000 },
+  "minimax:image": { minIntervalMs: 3000, retries: 8, timeoutMs: 180000 },
   "minimax:music": { minIntervalMs: 2200, retries: 4, timeoutMs: 180000 },
   "google:tts": { minIntervalMs: 1600, retries: 4, timeoutMs: 90000 },
   "google:image": { minIntervalMs: 2200, retries: 4, timeoutMs: 120000 },
