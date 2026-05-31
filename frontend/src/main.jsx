@@ -51,6 +51,8 @@ const OUTPUT_LABELS = {
   audioManifest: "Audio Manifest",
   imageManifest: "Image Manifest",
   musicManifest: "Music Manifest",
+  timelineManifest: "Timeline Manifest",
+  timelineManifestPortrait: "Portrait Timeline Manifest",
   qualityReport: "Quality Report",
   youtubeCopy: "YouTube Copy",
   youtubeCopyJson: "YouTube Copy JSON"
@@ -384,6 +386,34 @@ function App() {
     navigate(path, { output: item.slug });
   }
 
+  function handleRepairDraftCreated(result) {
+    const nextDraft = result?.draft;
+    if (!nextDraft) return;
+    const topic = nextDraft.topic || result.analysis?.title || form.topic || "Story Video";
+    setForm((current) => ({
+      ...current,
+      topic,
+      minutes: "15",
+      templateId: nextDraft.template?.id || current.templateId
+    }));
+    setOutline(nextDraft.outline || null);
+    setOutlineTopic(topic);
+    setDraft(nextDraft);
+    setDraftFeedback("");
+    setDraftMeta({
+      autosaved: result.autosaved,
+      repairSlug: result.repairSlug,
+      imageTarget: countDraftImages(nextDraft),
+      musicTarget: 3
+    });
+    setStatus("idle");
+    setLogs([
+      `Repair draft created from ${result.sourceSlug || "old output"}.`,
+      `Review the repaired draft before generating. Saved as /outputs/${result.repairSlug}/draft.json.`
+    ]);
+    navigate("/generate");
+  }
+
   const progress = getProgress(logs, status);
   const activeOutput = currentOutput || (outputSlug ? recent.find((item) => item.slug === outputSlug) : null);
 
@@ -417,7 +447,7 @@ function App() {
             onRevise={handleReviseDraft}
           />
         )}
-        {route === "/preview" && <PreviewPage output={activeOutput} />}
+        {route === "/preview" && <PreviewPage output={activeOutput} onRepairDraftCreated={handleRepairDraftCreated} />}
         {route === "/outputs" && <OutputsPage output={activeOutput} />}
         {route === "/recent" && <RecentPage items={recent} refresh={loadRecentOutputs} openRecent={openRecent} />}
         {route === "/status" && <StatusPage status={status} logs={logs} progress={progress} job={job} onContinue={handleContinueJob} onRefresh={handleRefreshJob} />}
@@ -703,10 +733,13 @@ function estimateImageBeats(draft) {
   }, 0);
 }
 
-function PreviewPage({ output }) {
+function PreviewPage({ output, onRepairDraftCreated }) {
   const slug = slugFromOutputs(output?.outputs);
   const [videoVersion, setVideoVersion] = useState(0);
   const [rerenderState, setRerenderState] = useState("");
+  const [qualityAnalysis, setQualityAnalysis] = useState(null);
+  const [qualityState, setQualityState] = useState("");
+  const [repairState, setRepairState] = useState("");
   const [stats, setStats] = useState(null);
   const [youtubeCopy, setYoutubeCopy] = useState(null);
   const [showYoutubeCopy, setShowYoutubeCopy] = useState(false);
@@ -714,6 +747,9 @@ function PreviewPage({ output }) {
   useEffect(() => {
     setVideoVersion(0);
     setRerenderState("");
+    setQualityAnalysis(null);
+    setQualityState("");
+    setRepairState("");
     setStats(null);
     setYoutubeCopy(null);
     setShowYoutubeCopy(false);
@@ -722,8 +758,9 @@ function PreviewPage({ output }) {
     Promise.all([
       fetchJson(`/api/media-info?path=${encodeURIComponent(output.outputs.video)}`).catch(() => ({ durationSeconds: 0 })),
       fetchJson(output.outputs.scriptJson).catch(() => null),
+      output.outputs.qualityReport ? fetchJson(output.outputs.qualityReport).catch(() => null) : Promise.resolve(null),
       output.outputs.youtubeCopyJson ? fetchJson(output.outputs.youtubeCopyJson).catch(() => null) : Promise.resolve(null)
-    ]).then(([media, script, ytCopy]) => {
+    ]).then(([media, script, report, ytCopy]) => {
       if (cancelled) return;
       const sections = script?.sections || [];
       const sentenceCount = sections.reduce((total, section) => total + (section.sentences?.length || 0), 0);
@@ -733,7 +770,10 @@ function PreviewPage({ output }) {
       setStats({
         duration: media.durationSeconds || 0,
         sentenceCount,
-        vocabularyCount
+        vocabularyCount,
+        scriptQualityStatus: report?.scriptQuality?.status || report?.status || "unknown",
+        durationDelta: report?.durationDelta || null,
+        imageCount: report?.counts?.images || 0
       });
       if (ytCopy) setYoutubeCopy(ytCopy);
     });
@@ -754,6 +794,36 @@ function PreviewPage({ output }) {
     }
   }
 
+  async function handleAnalyzeQuality() {
+    if (!slug) return;
+    setQualityState("Analyzing script, manifests, timeline, and generated media.");
+    try {
+      const result = await fetchJson(`/api/outputs/${encodeURIComponent(slug)}/analyze-quality`, { method: "POST" });
+      setQualityAnalysis(result);
+      setQualityState(result.status === "ok" ? "Quality analysis passed." : "Quality analysis found issues.");
+    } catch (error) {
+      const result = error.data || null;
+      if (result?.scriptQuality || result?.timelineWarnings) {
+        setQualityAnalysis(result);
+        setQualityState(result.status === "ok" ? "Quality analysis passed." : "Quality analysis found issues.");
+        return;
+      }
+      setQualityState(error.message);
+    }
+  }
+
+  async function handleCreateRepairDraft() {
+    if (!slug) return;
+    setRepairState("Creating a repaired draft from saved script and quality issues.");
+    try {
+      const result = await fetchJson(`/api/outputs/${encodeURIComponent(slug)}/create-repair-draft`, { method: "POST" });
+      setRepairState(`Repair draft saved as ${result.repairSlug}.`);
+      if (typeof onRepairDraftCreated === "function") onRepairDraftCreated(result);
+    } catch (error) {
+      setRepairState(error.message);
+    }
+  }
+
   return (
     <section className="glass-card content-panel preview-panel">
       <p className="section-kicker">Preview</p>
@@ -763,6 +833,12 @@ function PreviewPage({ output }) {
           <div className="title-actions">
             <button className="ghost-action" type="button" onClick={handleRerenderUi}>
               Re-render Video UI
+            </button>
+            <button className="ghost-action" type="button" onClick={handleAnalyzeQuality}>
+              Analyze Quality
+            </button>
+            <button className="ghost-action" type="button" onClick={handleCreateRepairDraft}>
+              Create Repair Draft
             </button>
             <a className="ghost-action download-btn" href={output.outputs.video} download={`${output.title || "video"}.mp4`}>
               Download
@@ -780,9 +856,14 @@ function PreviewPage({ output }) {
           <span>Duration: {formatTime(stats?.duration || 0)}</span>
           <span>Sentences: {stats?.sentenceCount || 0}</span>
           <span>Vocabulary: {stats?.vocabularyCount || 0}</span>
+          <span>Images: {stats?.imageCount || 0}</span>
+          <span>Quality: {stats?.scriptQualityStatus || "unknown"}</span>
         </div>
       )}
       {rerenderState && <p className="preview-message">{rerenderState}</p>}
+      {qualityState && <p className="preview-message">{qualityState}</p>}
+      {repairState && <p className="preview-message">{repairState}</p>}
+      {qualityAnalysis && <QualityAnalysisPanel analysis={qualityAnalysis} />}
       {output?.outputs?.video ? (
         <VideoPlayer src={output.outputs.video} cacheKey={videoVersion} title={output.title} />
       ) : (
@@ -846,6 +927,44 @@ function PreviewPage({ output }) {
         </div>
       )}
     </section>
+  );
+}
+
+function QualityAnalysisPanel({ analysis }) {
+  const scriptIssues = analysis?.scriptQuality?.issues || [];
+  const timelineWarnings = analysis?.timelineWarnings || [];
+  const imageIssues = analysis?.imageIssues || [];
+  return (
+    <div className={`quality-panel ${analysis.status === "ok" ? "ok" : "warning"}`}>
+      <div className="quality-panel-header">
+        <strong>Quality Analysis: {analysis.status}</strong>
+        <span>{analysis.repairRecommended ? "Repair recommended" : "Ready"}</span>
+      </div>
+      <div className="quality-grid">
+        <div>
+          <small>Script</small>
+          <strong>{analysis.scriptQuality?.status || "unknown"}</strong>
+          <p>{analysis.scriptQuality?.counts?.sentences || 0} sentences · {analysis.scriptQuality?.counts?.sections || 0} scenes</p>
+        </div>
+        <div>
+          <small>Timeline</small>
+          <strong>{formatSignedSeconds(analysis.durationDelta?.audioVsSubtitlesSeconds)} audio/subtitle</strong>
+          <p>{formatSignedSeconds(analysis.durationDelta?.videoVsAudioSeconds)} video/audio</p>
+        </div>
+        <div>
+          <small>Images</small>
+          <strong>{imageIssues.length ? `${imageIssues.length} issues` : "ok"}</strong>
+          <p>{analysis.manifests?.images ? "manifest present" : "manifest missing"}</p>
+        </div>
+      </div>
+      {(scriptIssues.length > 0 || timelineWarnings.length > 0 || imageIssues.length > 0) && (
+        <ul className="quality-list">
+          {scriptIssues.slice(0, 4).map((issue, index) => <li key={`s-${index}`}>{issue}</li>)}
+          {timelineWarnings.slice(0, 4).map((issue, index) => <li key={`t-${index}`}>{issue}</li>)}
+          {imageIssues.slice(0, 4).map((issue, index) => <li key={`i-${index}`}>{issue.sceneId || "image"}: {issue.error || issue.status}</li>)}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1114,6 +1233,14 @@ function StatusPage({ status, logs, progress, job, onContinue, onRefresh }) {
         <div className="saved-state-row">
           <span>{job?.recoverable ? "Recoverable failure. Wait for quota/API recovery, then continue generation." : "Progress is saved locally for quota recovery."}</span>
           <a href={job.outputs.jobState}>Open job-state.json</a>
+        </div>
+      )}
+      {job?.error && (
+        <div className="status-error-box">
+          <strong>{failedStage ? `${failedStage} failed` : "Generation failed"}</strong>
+          <span>{job.errorType || "error"}</span>
+          <p>{job.error}</p>
+          {job.recoverable && <small>Suggestion: wait for API quota or service recovery, then click Continue Generation.</small>}
         </div>
       )}
       <pre className="log-box">{logs.join("\n")}</pre>
@@ -1898,7 +2025,11 @@ async function fetchJson(url, options = {}) {
     }
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) throw new Error(data.error || `Request failed: ${response.status}`);
+  if (!response.ok || data.error) {
+    const error = new Error(data.error || `Request failed: ${response.status}`);
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 
@@ -2002,6 +2133,13 @@ function formatTime(seconds) {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatSignedSeconds(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "0.000s";
+  const prefix = number > 0 ? "+" : "";
+  return `${prefix}${number.toFixed(3)}s`;
 }
 
 function fileName(url) {

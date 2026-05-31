@@ -37,6 +37,7 @@ const { getVideoTemplate, listVideoTemplates, generateTemplateFromTopic } = requ
 const { slugify, ensureDir } = require("./utils");
 const { classifyError } = require("./errorClassifier");
 const { createStages, firstFailedStage, markStage, summarizeStageCounts } = require("./jobStages");
+const { inspectStoryQuality } = require("./storyQuality");
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -291,6 +292,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/jobs/latest") {
       return sendJson(res, await serializeLatestJob());
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/analyze-quality")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await analyzeOutputQuality(res, slug);
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/create-repair-draft")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await createRepairDraft(res, slug);
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/rerender-ui")) {
@@ -613,6 +624,8 @@ function serializeJobObject(job) {
       audioManifest: `${base}audio-manifest.json`,
       imageManifest: `${base}image-manifest.json`,
       musicManifest: `${base}music-manifest.json`,
+      timelineManifest: `${base}timeline-manifest.json`,
+      timelineManifestPortrait: `${base}timeline-manifest-portrait.json`,
       qualityReport: `${base}quality-report.json`
     }
   };
@@ -932,8 +945,8 @@ async function readOptionalJson(file) {
   }
 }
 
-async function saveStoryDraft({ topic, template, outline, draft, searchContext, revisionNote }) {
-  const slug = slugify(topic || draft?.topic || "story-draft");
+async function saveStoryDraft({ topic, template, outline, draft, searchContext, revisionNote, slugOverride }) {
+  const slug = slugify(slugOverride || topic || draft?.topic || "story-draft");
   const outputDir = path.join(OUTPUT_ROOT, slug);
   await ensureDir(outputDir);
   const savedAt = new Date().toISOString();
@@ -952,6 +965,7 @@ async function saveStoryDraft({ topic, template, outline, draft, searchContext, 
   await fs.writeFile(draftJsonPath, `${JSON.stringify(draftJson, null, 2)}\n`, "utf8");
   await fs.writeFile(draftMdPath, renderMarkdown(draft), "utf8");
   return {
+    slug,
     savedAt,
     draftJson: `/outputs/${slug}/draft.json`,
     draftMd: `/outputs/${slug}/draft.md`
@@ -977,10 +991,223 @@ async function outputPathsForSlug(slug) {
     audioManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "audio-manifest.json")) ? `${base}audio-manifest.json` : null,
     imageManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "image-manifest.json")) ? `${base}image-manifest.json` : null,
     musicManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "music-manifest.json")) ? `${base}music-manifest.json` : null,
+    timelineManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "timeline-manifest.json")) ? `${base}timeline-manifest.json` : null,
+    timelineManifestPortrait: await fileExists(path.join(OUTPUT_ROOT, slug, "timeline-manifest-portrait.json")) ? `${base}timeline-manifest-portrait.json` : null,
     qualityReport: await fileExists(path.join(OUTPUT_ROOT, slug, "quality-report.json")) ? `${base}quality-report.json` : null,
     youtubeCopy: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.md")) ? `${base}youtube-copy.md` : null,
     youtubeCopyJson: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.json")) ? `${base}youtube-copy.json` : null
   };
+}
+
+async function analyzeOutputQuality(res, slugInput) {
+  try {
+    const analysis = await analyzeOutputQualityPayload(slugInput);
+    return sendJson(res, analysis);
+  } catch (error) {
+    return sendJson(res, { ok: false, error: error.message }, /not found/i.test(error.message) ? 404 : 400);
+  }
+}
+
+async function analyzeOutputQualityPayload(slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    throw new Error("Invalid output slug.");
+  }
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  if (!await fileExists(outputDir)) {
+    throw new Error("Output not found.");
+  }
+
+  const script = await readOptionalJson(path.join(outputDir, "script.json"));
+  const draftEnvelope = await readOptionalJson(path.join(outputDir, "draft.json"));
+  const story = script || draftEnvelope?.draft;
+  if (!story) {
+    throw new Error("No script.json or draft.json found for quality analysis.");
+  }
+
+  const qualityReport = await readOptionalJson(path.join(outputDir, "quality-report.json"));
+  const audioManifest = await readOptionalJson(path.join(outputDir, "audio-manifest.json"));
+  const imageManifest = await readOptionalJson(path.join(outputDir, "image-manifest.json"));
+  const musicManifest = await readOptionalJson(path.join(outputDir, "music-manifest.json"));
+  const timelineManifest = await readOptionalJson(path.join(outputDir, "timeline-manifest.json"));
+  const jobState = await readOptionalJson(path.join(outputDir, "job-state.json"));
+  const readingOrder = Array.isArray(script?.readingOrder) ? script.readingOrder : [];
+  const subtitleLastTimestamp = readingOrder.length
+    ? Number(readingOrder[readingOrder.length - 1].endSeconds || 0)
+    : 0;
+  const audioDuration = await probeFileDuration(path.join(outputDir, "audio.wav"));
+  const videoDuration = await probeFileDuration(path.join(outputDir, "final.mp4"));
+  const scriptQuality = inspectStoryQuality(story, {
+    minimumSections: story?.mode === "pure-story" && Number(story.targetDurationMinutes || 0) >= 10 ? 8 : 0
+  });
+  const durationDelta = {
+    audioVsSubtitlesSeconds: roundSeconds((audioDuration || 0) - subtitleLastTimestamp),
+    videoVsAudioSeconds: roundSeconds((videoDuration || 0) - (audioDuration || 0)),
+    timelineVsAudioSeconds: timelineManifest
+      ? roundSeconds((timelineManifest.timelineEndSeconds || 0) - (audioDuration || 0))
+      : null
+  };
+  const timelineWarnings = [];
+  if (!readingOrder.length) timelineWarnings.push("script.json has no readingOrder timing data.");
+  if (audioDuration && Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.1) {
+    timelineWarnings.push(`Audio and subtitle timings differ by ${Math.abs(durationDelta.audioVsSubtitlesSeconds).toFixed(3)} seconds.`);
+  }
+  if (videoDuration && audioDuration && Math.abs(durationDelta.videoVsAudioSeconds) > 0.1) {
+    timelineWarnings.push(`Video and audio timings differ by ${Math.abs(durationDelta.videoVsAudioSeconds).toFixed(3)} seconds.`);
+  }
+  if (!timelineManifest && videoDuration) {
+    timelineWarnings.push("timeline-manifest.json is missing; re-render video UI to rebuild frame timing data.");
+  }
+  if (timelineManifest && Math.abs(durationDelta.timelineVsAudioSeconds || 0) > 0.1) {
+    timelineWarnings.push(`Timeline manifest and audio differ by ${Math.abs(durationDelta.timelineVsAudioSeconds).toFixed(3)} seconds.`);
+  }
+
+  const imageIssues = collectImageManifestIssues(imageManifest);
+  const failedTimeline = Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.5
+    || Math.abs(durationDelta.videoVsAudioSeconds) > 0.5
+    || Math.abs(durationDelta.timelineVsAudioSeconds || 0) > 0.5;
+  const failed = !scriptQuality.ok || failedTimeline || imageIssues.length > 0 || jobState?.status === "failed";
+  const status = failed ? "failed-quality" : timelineWarnings.length ? "warning" : "ok";
+
+  return {
+    ok: status !== "failed-quality",
+    slug,
+    status,
+    repairRecommended: status !== "ok",
+    title: story.title || titleFromSlug(slug),
+    scriptQuality,
+    duration: {
+      readingOrderSeconds: roundSeconds(subtitleLastTimestamp),
+      audioSeconds: roundSeconds(audioDuration),
+      videoSeconds: roundSeconds(videoDuration),
+      timelineSeconds: roundSeconds(timelineManifest?.timelineEndSeconds || 0)
+    },
+    durationDelta,
+    timelineWarnings,
+    imageIssues,
+    manifests: {
+      audio: Boolean(audioManifest),
+      images: Boolean(imageManifest),
+      music: Boolean(musicManifest),
+      timeline: Boolean(timelineManifest),
+      qualityReport: Boolean(qualityReport)
+    },
+    job: jobState ? {
+      id: jobState.id,
+      status: jobState.status,
+      failedStage: jobState.failedStage || null,
+      errorType: jobState.errorType || null,
+      error: jobState.error || null
+    } : null
+  };
+}
+
+function collectImageManifestIssues(imageManifest) {
+  if (!imageManifest || !Array.isArray(imageManifest.items)) return [];
+  return imageManifest.items
+    .filter((item) => item.status !== "completed" || item.error || item.quality?.ok === false)
+    .slice(0, 50)
+    .map((item) => ({
+      sceneId: item.sceneId || null,
+      status: item.status || "unknown",
+      error: item.error || item.quality?.reason || null
+    }));
+}
+
+async function createRepairDraft(res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  if (!await fileExists(outputDir)) {
+    return sendJson(res, { error: "Output not found." }, 404);
+  }
+
+  const script = await readOptionalJson(path.join(outputDir, "script.json"));
+  const draftEnvelope = await readOptionalJson(path.join(outputDir, "draft.json"));
+  const sourceDraft = draftEnvelope?.draft || script;
+  if (!sourceDraft) {
+    return sendJson(res, { error: "No script or draft is available to repair." }, 404);
+  }
+
+  try {
+    const analysis = await analyzeOutputQualityPayload(slug);
+    const topic = sourceDraft.topic || draftEnvelope?.topic || script?.topic || titleFromSlug(slug);
+    const template = sourceDraft.template || draftEnvelope?.template || script?.template || null;
+    const outline = sourceDraft.outline || draftEnvelope?.outline || script?.outline || null;
+    const repairSlug = `${slug}-repair-${Date.now()}`;
+    const feedback = buildRepairFeedback(analysis);
+    const repairedDraft = await reviseStoryDraft({
+      topic,
+      targetDurationMinutes: 15,
+      draft: sourceDraft,
+      feedback,
+      template
+    });
+    const autosaved = await saveStoryDraft({
+      topic,
+      template,
+      outline: repairedDraft.outline || outline,
+      draft: repairedDraft,
+      searchContext: draftEnvelope?.searchContext || outline?.searchContext || sourceDraft.outline?.searchContext || null,
+      revisionNote: feedback,
+      slugOverride: repairSlug
+    });
+    return sendJson(res, {
+      ok: true,
+      sourceSlug: slug,
+      repairSlug: autosaved.slug || repairSlug,
+      draft: repairedDraft,
+      autosaved,
+      analysis
+    });
+  } catch (error) {
+    return sendJson(res, { ok: false, error: error.message }, 400);
+  }
+}
+
+function buildRepairFeedback(analysis) {
+  const lines = [
+    "Rewrite this draft into a clean reviewed script. Do not preserve broken repeated tail content.",
+    "Keep the same topic, template, factual claims, bilingual Chinese translations, and useful vocabulary notes.",
+    "Remove any repeated full sentences, repeated scene templates, boilerplate filler, and dragged ending scenes.",
+    "Every scene must contain clear English sentences, matching Chinese translations, and 2-4 useful vocabulary entries."
+  ];
+  if (analysis.scriptQuality?.issues?.length) {
+    lines.push(`Script issues: ${analysis.scriptQuality.issues.join(" ")}`);
+  }
+  if (analysis.timelineWarnings?.length) {
+    lines.push(`Timeline issues to avoid: ${analysis.timelineWarnings.join(" ")}`);
+  }
+  if (analysis.imageIssues?.length) {
+    lines.push(`Image issues were found for scenes: ${analysis.imageIssues.map((item) => item.sceneId).filter(Boolean).join(", ")}.`);
+  }
+  return lines.join("\n");
+}
+
+async function probeFileDuration(file) {
+  try {
+    await fs.access(file);
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      file
+    ], { maxBuffer: 1024 * 1024 });
+    const duration = Number(stdout.trim());
+    return Number.isFinite(duration) ? duration : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function roundSeconds(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Number(number.toFixed(3)) : 0;
 }
 
 async function rerenderOutputUi(res, slugInput) {

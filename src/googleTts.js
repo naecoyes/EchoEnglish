@@ -59,13 +59,14 @@ async function createAudio({ readingItems, outputDir, apiKey, baseUrl, model, vo
     await updateAudioManifest(outputDir, item.id, { status: "completed", cacheKey, durationSeconds: spokenSeconds, path: wavPath, error: null });
     concatFiles.push(wavPath);
 
-    const displayEnd = cursor + spokenSeconds + Math.min(item.pauseAfterSeconds, 1.2);
+    const pauseSeconds = Number(item.pauseAfterSeconds || 0);
+    const displayEnd = cursor + spokenSeconds + pauseSeconds;
     timedItems.push({ ...item, startSeconds: cursor, endSeconds: displayEnd, spokenSeconds });
     cursor += spokenSeconds;
-    if (item.pauseAfterSeconds > 0) {
-      const silencePath = await getSilenceFile(workDir, item.pauseAfterSeconds);
+    if (pauseSeconds > 0) {
+      const silencePath = await getSilenceFile(workDir, pauseSeconds);
       concatFiles.push(silencePath);
-      cursor += item.pauseAfterSeconds;
+      cursor += pauseSeconds;
     }
   }
 

@@ -797,6 +797,70 @@ button:disabled {
   line-height: 1.45;
 }
 
+.quality-panel {
+  border: 1px solid rgba(0, 122, 255, 0.16);
+  border-radius: 20px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.quality-panel.warning {
+  border-color: rgba(255, 149, 0, 0.28);
+  background: rgba(255, 250, 241, 0.72);
+}
+
+.quality-panel-header,
+.quality-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.quality-panel-header span {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.quality-grid {
+  margin-top: 12px;
+  justify-content: flex-start;
+}
+
+.quality-grid > div {
+  min-width: 190px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.quality-grid small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.quality-grid p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quality-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .youtube-copy-section {
   margin-top: 8px;
 }
@@ -873,6 +937,8 @@ button:disabled {
 
 .title-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   align-items: center;
   margin-left: auto;
@@ -1162,6 +1228,29 @@ video {
   color: var(--blue);
   font-weight: 850;
   text-decoration: none;
+}
+
+.status-error-box {
+  border: 1px solid rgba(255, 59, 48, 0.24);
+  border-radius: 18px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  background: rgba(255, 245, 244, 0.76);
+  color: #8a1f16;
+  display: grid;
+  gap: 6px;
+}
+
+.status-error-box span,
+.status-error-box small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-error-box p {
+  margin: 0;
+  color: #5f1711;
+  line-height: 1.45;
 }
 
 .log-box {
@@ -1560,6 +1649,12 @@ video {
 
   .status-actions {
     width: 100%;
+  }
+
+  .title-actions {
+    width: 100%;
+    justify-content: flex-start;
+    margin-left: 0;
   }
 
   .compact-action {

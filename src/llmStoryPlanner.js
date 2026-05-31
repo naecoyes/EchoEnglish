@@ -1,6 +1,7 @@
 const { DEFAULT_LLM, getEffectiveSettings } = require("./settingsStore");
 const { formatSearchContext } = require("./tavilySearch");
 const { enrichStoryVocabulary } = require("./vocabularyTools");
+const { filterBoilerplateSections, findStoryQualityIssues, sectionHasBoilerplate } = require("./storyQuality");
 
 async function generateVideoTemplate({ topic, minutes = 15, searchContext = null }) {
   const config = await getLlmConfig();
@@ -102,24 +103,6 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
 
   const payload = await callChatJson(config, prompt, 2400);
   return normalizeOutline(payload, topic, minutes, searchContext ? "llm+tavily" : "llm", searchContext, template);
-}
-
-async function createPureStory({ topic, targetDurationMinutes, level, annotationStyle, outline, template = null }) {
-  const config = await getLlmConfig();
-  if (!config.apiKey) {
-    throw new Error("LLM API key is required for story script generation. Open Settings and save an LLM API key.");
-  }
-
-  const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline, template), 22000);
-  return normalizeStory(payload, {
-    topic,
-    targetDurationMinutes,
-    level,
-    annotationStyle,
-    outline,
-    template,
-    source: "llm"
-  });
 }
 
 async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback, template = null }) {
@@ -357,14 +340,16 @@ function normalizeStory(input, context) {
     .map((section, index) => normalizeSection(section, index, input?.title || outline.title))
     .filter((section) => section.sentences.length >= 3 && section.sentences.length <= 6 && section.translations.length === section.sentences.length)
     .slice(0, outline.targetScenes || 30);
-  normalizedSections = deduplicateSections(normalizedSections);
+  normalizedSections = filterBoilerplateSections(deduplicateSections(normalizedSections));
   const generationWarnings = [];
   const targetScenes = outline.targetScenes || Math.max(12, Math.round((context.targetDurationMinutes || 15) * 1.1));
   const targetImages = outline.targetImages || Math.round((context.targetDurationMinutes || 15) * 2.5);
+  const minimumScenes = Math.min(12, Math.max(8, targetScenes - 4));
 
-  // Require minimum scene count - no fallback
-  if (normalizedSections.length < 8) {
-    throw new Error(`LLM returned only ${normalizedSections.length} valid scenes. Minimum 8 scenes required. Please retry generation.`);
+  // Require enough non-boilerplate scenes. Failing here is better than producing a video
+  // whose final minutes repeat generic filler sentences.
+  if (normalizedSections.length < minimumScenes) {
+    throw new Error(`LLM returned only ${normalizedSections.length} usable non-repetitive scenes. Minimum ${minimumScenes} scenes required. Please retry generation.`);
   }
 
   // Don't force-fill to target scenes - use what LLM generated
@@ -427,10 +412,7 @@ function deduplicateSections(sections) {
       });
       if (isNearDup) continue;
     }
-    const title = String(section.title || "");
-    const isAutoTitle = /^Scene \d+$/.test(title);
-    const hasFillerPattern = sentences.some((s) => /reached an important|showed how a plan became|connected this moment with a larger|The next step was also important/i.test(s));
-    if (isAutoTitle && hasFillerPattern) continue;
+    if (sectionHasBoilerplate(section)) continue;
     seen.add(signature);
     result.push(section);
   }
@@ -990,20 +972,49 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     console.log(`[Story Generation] Attempt ${attempt}/${maxRetries} for topic: ${topic}`);
 
-    const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline, template), 22000);
-    const story = normalizeStory(payload, {
-      topic,
-      targetDurationMinutes,
-      level,
-      annotationStyle,
-      outline,
-      template,
-      source: "llm"
-    });
+    let story = null;
+    let validation = null;
+    try {
+      const payload = await callChatJson(config, buildStoryPrompt(topic, targetDurationMinutes, outline, template), 22000);
+      story = normalizeStory(payload, {
+        topic,
+        targetDurationMinutes,
+        level,
+        annotationStyle,
+        outline,
+        template,
+        source: "llm"
+      });
+
+      const localIssues = findStoryQualityIssues(story, {
+        minimumSections: Math.min(12, Math.max(8, Number(story.outline?.targetScenes || 16) - 4))
+      });
+      if (localIssues.length) {
+        validation = {
+          valid: false,
+          issues: localIssues,
+          suggestions: ["Rewrite the ending with specific, non-repeated story beats."],
+          sceneCount: story.sections?.length || 0,
+          totalSentences: countStorySentences(story),
+          qualityScore: 0
+        };
+      }
+    } catch (error) {
+      validation = {
+        valid: false,
+        issues: [error.message],
+        suggestions: ["Return complete, specific scenes instead of generic filler."],
+        sceneCount: 0,
+        totalSentences: 0,
+        qualityScore: 0
+      };
+    }
 
     // Validate the generated story
-    console.log(`[Story Generation] Validating story (attempt ${attempt})...`);
-    const validation = await validateStoryWithLLM(story, topic, config);
+    if (!validation) {
+      console.log(`[Story Generation] Validating story (attempt ${attempt})...`);
+      validation = await validateStoryWithLLM(story, topic, config);
+    }
 
     if (validation.valid && validation.qualityScore >= 7) {
       console.log(`[Story Generation] Validation passed! Quality score: ${validation.qualityScore}/10`);
@@ -1028,13 +1039,16 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
     }
   }
 
-  // If all retries fail, return the last story with warnings
-  console.log(`[Story Generation] All ${maxRetries} attempts failed validation. Returning last generated story.`);
+  console.log(`[Story Generation] All ${maxRetries} attempts failed validation.`);
   if (lastValidation) {
     console.log(`[Story Generation] Last validation score: ${lastValidation.qualityScore}/10`);
     console.log(`[Story Generation] Issues:`, lastValidation.issues.join("; "));
   }
-  return lastStory;
+  throw new Error(`LLM draft did not pass quality checks after ${maxRetries} attempts: ${(lastValidation?.issues || ["unknown issue"]).join("; ")}`);
+}
+
+function countStorySentences(story) {
+  return (story.sections || []).reduce((total, section) => total + (section.sentences?.length || 0), 0);
 }
 
 module.exports = {

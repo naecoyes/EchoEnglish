@@ -1,8 +1,8 @@
 const STAGE_DEFINITIONS = [
-  { id: "draft", label: "Draft", detail: "Confirmed review draft and search context." },
+  { id: "draft", label: "Draft Quality", detail: "Confirmed review draft, search context, and quality gate." },
   { id: "script-assets", label: "Script Assets", detail: "script.json, script.md, subtitles, and image prompts." },
   { id: "tts", label: "Narration", detail: "Sentence-level TTS and timing manifest." },
-  { id: "images", label: "Scene Images", detail: "One generated background per sentence beat." },
+  { id: "images", label: "Images", detail: "Story beat backgrounds and image manifest." },
   { id: "music", label: "Music", detail: "Background music tracks and merged bed." },
   { id: "compose", label: "Compose MP4", detail: "Final video render with captions and audio." },
   { id: "quality", label: "Quality Report", detail: "Duration, count, and warning checks." }

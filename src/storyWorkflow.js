@@ -18,6 +18,7 @@ const { slugify, ensureDir, pathExists } = require("./utils");
 const { classifyError } = require("./errorClassifier");
 const { enrichStoryVocabulary } = require("./vocabularyTools");
 const { writeYouTubeCopy } = require("./youtubeCopy");
+const { assertStoryQuality, inspectStoryQuality } = require("./storyQuality");
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +51,9 @@ async function generateStoryWorkflow(options = {}) {
   if (options.template && !story.template) {
     story.template = options.template;
   }
+  assertStoryQuality(story, {
+    minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0
+  });
   if (options.storyDraft) {
     await runStage(options, "draft", async () => ({
       status: "completed",
@@ -149,6 +153,9 @@ async function generateStoryWorkflow(options = {}) {
     audio: options.skipAudio ? null : "audio.wav",
     music: !options.skipAudio && resolveMusicMode(options.musicMode) === "minimax" ? "music/background.mp3" : null,
     video: options.skipAudio ? null : "final.mp4",
+    videoPortrait: options.skipAudio ? null : "final-portrait.mp4",
+    timelineManifest: options.skipAudio ? null : "timeline-manifest.json",
+    timelineManifestPortrait: options.skipAudio ? null : "timeline-manifest-portrait.json",
     qualityReport: "quality-report.json"
   };
 
@@ -324,6 +331,9 @@ async function generateStoryWorkflow(options = {}) {
       audio: options.skipAudio ? null : path.join(outputDir, "audio.wav"),
       music: musicSummary ? path.join(outputDir, "music", "background.mp3") : null,
       video: options.skipAudio ? null : path.join(outputDir, "final.mp4"),
+      videoPortrait: options.skipAudio ? null : path.join(outputDir, "final-portrait.mp4"),
+      timelineManifest: options.skipAudio ? null : path.join(outputDir, "timeline-manifest.json"),
+      timelineManifestPortrait: options.skipAudio ? null : path.join(outputDir, "timeline-manifest-portrait.json"),
       qualityReport: path.join(outputDir, "quality-report.json"),
       youtubeCopy: path.join(outputDir, "youtube-copy.md"),
       youtubeCopyJson: path.join(outputDir, "youtube-copy.json")
@@ -339,6 +349,10 @@ function assignPodcastVoices(readingItems, settings, options) {
     const voice = voiceMap[item.speaker];
     return voice ? { ...item, voice } : item;
   });
+}
+
+function shouldRequireLongFormQuality(story) {
+  return story?.mode === "pure-story" && Number(story.targetDurationMinutes || 0) >= 10;
 }
 
 function getPodcastVoiceMap(provider, settings, options) {
@@ -473,32 +487,51 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
   const musicTrackCount = Array.isArray(musicSummary?.tracks) ? musicSummary.tracks.length : musicSummary ? 1 : 0;
   const audioDuration = skipAudio ? 0 : await probeDuration(audioPath);
   const videoDuration = skipAudio ? 0 : await probeDuration(videoPath);
+  const scriptQuality = inspectStoryQuality(story, {
+    minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0
+  });
+  const durationDelta = {
+    audioVsSubtitlesSeconds: roundSeconds((audioDuration || 0) - subtitleLastTimestamp),
+    videoVsAudioSeconds: roundSeconds((videoDuration || 0) - (audioDuration || 0))
+  };
   const warnings = [];
+  const timelineWarnings = [];
 
   if (!isPodcastStory(story) && (imageCount < 30 || imageCount > 45)) {
     warnings.push(`Image count ${imageCount} is outside the target range of 30-45.`);
   }
-  if (!skipAudio && audioDuration && Math.abs(audioDuration - subtitleLastTimestamp) > 0.1) {
-    warnings.push(`Audio duration and subtitle timeline differ by ${Math.abs(audioDuration - subtitleLastTimestamp).toFixed(3)} seconds.`);
+  if (!skipAudio && audioDuration && Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.1) {
+    timelineWarnings.push(`Audio duration and subtitle timeline differ by ${Math.abs(durationDelta.audioVsSubtitlesSeconds).toFixed(3)} seconds.`);
   }
-  if (!skipAudio && videoDuration && audioDuration && Math.abs(videoDuration - audioDuration) > 0.1) {
-    warnings.push(`Video duration and audio duration differ by ${Math.abs(videoDuration - audioDuration).toFixed(3)} seconds.`);
+  if (!skipAudio && videoDuration && audioDuration && Math.abs(durationDelta.videoVsAudioSeconds) > 0.1) {
+    timelineWarnings.push(`Video duration and audio duration differ by ${Math.abs(durationDelta.videoVsAudioSeconds).toFixed(3)} seconds.`);
   }
   if (!skipAudio && musicTrackCount < expectedMusicTracks) {
     warnings.push(`Music generated ${musicTrackCount} tracks, expected ${expectedMusicTracks}.`);
   }
+  const failedTimeline = Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.5
+    || Math.abs(durationDelta.videoVsAudioSeconds) > 0.5;
+  warnings.push(...timelineWarnings);
+  warnings.push(...scriptQuality.warnings);
+  const status = scriptQuality.ok && !failedTimeline
+    ? warnings.length ? "warning" : "ok"
+    : "failed-quality";
 
   const report = {
     generatedAt: new Date().toISOString(),
+    status,
     title: story.title,
     topic: story.topic,
     factualMode: story.contentMode === "factual-documentary" || story.outline?.contentMode === "factual-documentary",
+    scriptQuality,
     duration: {
       readingOrderSeconds: roundSeconds(subtitleLastTimestamp),
       audioSeconds: roundSeconds(audioDuration),
       videoSeconds: roundSeconds(videoDuration),
       subtitleLastTimestamp: roundSeconds(subtitleLastTimestamp)
     },
+    durationDelta,
+    timelineWarnings,
     counts: {
       sections: story.sections?.length || 0,
       sentences: countSentences(story),
@@ -822,8 +855,9 @@ function addEstimatedTimings(items) {
   return items.map((item) => {
     const spokenSeconds = estimateSpeechSeconds(item.text, item.language);
     const startSeconds = cursor;
-    const endSeconds = startSeconds + spokenSeconds + Math.min(item.pauseAfterSeconds, 1.2);
-    cursor = startSeconds + spokenSeconds + item.pauseAfterSeconds;
+    const pauseSeconds = Number(item.pauseAfterSeconds || 0);
+    const endSeconds = startSeconds + spokenSeconds + pauseSeconds;
+    cursor = startSeconds + spokenSeconds + pauseSeconds;
     return {
       ...item,
       startSeconds,

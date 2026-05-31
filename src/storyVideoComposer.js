@@ -28,6 +28,11 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
   await ensureDir(slidesDir);
 
   const frames = buildLearningFrames(story, readingItems);
+  if (!frames.length) {
+    throw new Error("Compose blocked: no timeline frames were generated.");
+  }
+  const audioDuration = await probeMediaDuration(audioPath);
+  alignFramesToAudioDuration(frames, audioDuration);
   const sharp = loadSharp();
 
   const totalFrames = frames.length;
@@ -37,7 +42,10 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
       pushLog(logs, `Rendering frame ${index + 1}/${totalFrames}: ${frame.title || frame.kind}`);
     }
 
+    const sceneImageId = resolveFrameSceneImageId(story, frame);
     const existingImage = await findExistingSceneImage(outputDir, story, frame);
+    frame.sceneImageId = sceneImageId;
+    frame.imagePath = existingImage || null;
     const imageDataUri = existingImage ? await imageToDataUri(existingImage) : null;
     const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri, layout });
     await sharp(Buffer.from(svg)).png().toFile(path.join(slidesDir, `${frame.id}.png`));
@@ -107,18 +115,87 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
     await runFfmpeg(fallbackArgs, { maxBuffer: 1024 * 1024 * 16 });
   }
 
+  await writeTimelineManifest({ outputDir, frames, audioDuration, orientation, videoPath });
+
   return {
     videoPath,
     musicPath,
+    audioDurationSeconds: audioDuration,
+    timelineManifest: orientation === "portrait"
+      ? path.join(outputDir, "timeline-manifest-portrait.json")
+      : path.join(outputDir, "timeline-manifest.json"),
     scenes: frames.map((frame) => ({
       id: frame.id,
       kind: frame.kind,
       title: frame.title,
       startSeconds: frame.startSeconds,
       endSeconds: frame.endSeconds,
-      durationSeconds: frame.durationSeconds
+      durationSeconds: frame.durationSeconds,
+      sceneImageId: frame.sceneImageId || null,
+      imagePath: frame.imagePath || null
     }))
   };
+}
+
+async function probeMediaDuration(file) {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      file
+    ], { maxBuffer: 1024 * 1024 });
+    const duration = Number(stdout.trim());
+    return Number.isFinite(duration) ? duration : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function alignFramesToAudioDuration(frames, audioDuration) {
+  if (!frames.length || !Number.isFinite(audioDuration) || audioDuration <= 0) return;
+  const last = frames[frames.length - 1];
+  const minimumEnd = Number(last.startSeconds || 0) + 0.5;
+  const nextEnd = Math.max(minimumEnd, audioDuration);
+  last.endSeconds = nextEnd;
+  last.durationSeconds = Math.max(0.5, nextEnd - Number(last.startSeconds || 0));
+}
+
+async function writeTimelineManifest({ outputDir, frames, audioDuration, orientation, videoPath }) {
+  const file = path.join(outputDir, orientation === "portrait" ? "timeline-manifest-portrait.json" : "timeline-manifest.json");
+  const lastEnd = frames.length ? Number(frames[frames.length - 1].endSeconds || 0) : 0;
+  const manifest = {
+    generatedAt: new Date().toISOString(),
+    orientation,
+    videoPath,
+    audioDurationSeconds: roundSeconds(audioDuration),
+    timelineEndSeconds: roundSeconds(lastEnd),
+    durationDeltaSeconds: roundSeconds((audioDuration || 0) - lastEnd),
+    frameCount: frames.length,
+    frames: frames.map((frame, index) => ({
+      index,
+      id: frame.id,
+      kind: frame.kind,
+      title: frame.title || null,
+      sectionIndex: Number.isInteger(frame.sectionIndex) ? frame.sectionIndex : null,
+      sentenceIndex: Number.isInteger(frame.sentenceIndex) ? frame.sentenceIndex : null,
+      startSeconds: roundSeconds(frame.startSeconds),
+      endSeconds: roundSeconds(frame.endSeconds),
+      durationSeconds: roundSeconds(frame.durationSeconds),
+      sceneImageId: frame.sceneImageId || null,
+      imagePath: frame.imagePath || null,
+      isVocabularyReview: frame.kind === "vocab-review"
+    }))
+  };
+  await fs.writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+function roundSeconds(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Number(number.toFixed(3)) : 0;
 }
 
 async function resolveVideoEncoder(preference = "auto", logs = []) {
@@ -373,6 +450,23 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
     if (await pathExists(candidate)) return candidate;
   }
   return null;
+}
+
+function resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex = 0) {
+  if (isPodcastStory(story)) {
+    const speaker = typeof frameOrIndex === "object" ? frameOrIndex.speaker : null;
+    return speaker === "host-b" ? "podcast-host-b" : "podcast-host-a";
+  }
+
+  const index = typeof frameOrIndex === "object" ? frameOrIndex.sectionIndex : frameOrIndex;
+  const frameSentenceIndex = typeof frameOrIndex === "object" ? frameOrIndex.sentenceIndex : sentenceIndex;
+  const section = story.sections[index] || {};
+  const baseIndex = Number.isInteger(section.baseSectionIndex) ? section.baseSectionIndex : index;
+  const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
+  const variantSuffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
+  const sceneBase = `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}`;
+  const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
+  return `${sceneBase}-${String(beatIndex + 1).padStart(2, "0")}`;
 }
 
 async function findBatchImages(imagesDir, sceneBase) {

@@ -46,6 +46,16 @@ Generation is tracked as a seven-stage state machine:
 draft -> script-assets -> tts -> images -> music -> compose -> quality
 ```
 
+## Stability V2
+
+EchoEnglish blocks weak scripts before expensive media APIs run:
+
+- Repeated boilerplate scenes, repeated full sentences, repeated endings, missing Chinese translations, and missing vocabulary notes fail the draft quality gate.
+- Confirmed drafts are checked again before TTS, images, music, and video composition.
+- TTS manifests, image manifests, music manifests, and timeline manifests are saved for recovery and debugging.
+- The final video timeline is aligned to the real `audio.wav` duration to avoid tail-frame hold or repeated-looking endings.
+- Existing outputs can be analyzed from Preview with **Analyze Quality** and repaired with **Create Repair Draft**. Repair drafts are saved to a new output folder and do not overwrite the original video.
+
 Each output folder can include:
 
 ```text
@@ -62,6 +72,8 @@ outputs/{slug}/
   audio-manifest.json
   image-manifest.json
   music-manifest.json
+  timeline-manifest.json
+  timeline-manifest-portrait.json
   quality-report.json
   images/
   music/
@@ -449,6 +461,22 @@ Use the draft review step and revise with feedback before confirming. For factua
 ### Video UI changes needed
 
 Use Re-render Video UI from Preview. It reuses existing assets and avoids extra API cost.
+
+### Analyze and repair old outputs
+
+Preview now includes **Analyze Quality** and **Create Repair Draft**:
+
+- `POST /api/outputs/{slug}/analyze-quality` reads `script.json`, `audio-manifest.json`, `image-manifest.json`, `timeline-manifest.json`, and `quality-report.json`.
+- It reports repeated draft sections, missing Chinese translations, missing vocabulary notes, image manifest failures, and audio/subtitle/video duration deltas.
+- `POST /api/outputs/{slug}/create-repair-draft` creates a new `outputs/{slug}-repair-{timestamp}/draft.json` for review. It does not overwrite the original video.
+
+Every completed render writes:
+
+- `timeline-manifest.json`
+- `timeline-manifest-portrait.json`
+- `quality-report.json`
+
+The final frame is aligned to the real `audio.wav` duration, so subtitle and video timing should not leave an extra trailing hold. `quality-report.json` marks timing deltas above `0.1s` as warnings and above `0.5s` as `failed-quality`.
 
 ### Xiaomi MiMo TTS errors
 

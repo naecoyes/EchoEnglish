@@ -50,7 +50,8 @@ async function createAudio({ readingItems, outputDir, englishVoice, chineseVoice
 
     concatFiles.push(wavPath);
 
-    const displayEnd = cursor + spokenSeconds + Math.min(item.pauseAfterSeconds, 1.2);
+    const pauseSeconds = Number(item.pauseAfterSeconds || 0);
+    const displayEnd = cursor + spokenSeconds + pauseSeconds;
     timedItems.push({
       ...item,
       startSeconds: cursor,
@@ -60,10 +61,10 @@ async function createAudio({ readingItems, outputDir, englishVoice, chineseVoice
 
     cursor += spokenSeconds;
 
-    if (item.pauseAfterSeconds > 0) {
-      const silencePath = await getSilenceFile(workDir, item.pauseAfterSeconds);
+    if (pauseSeconds > 0) {
+      const silencePath = await getSilenceFile(workDir, pauseSeconds);
       concatFiles.push(silencePath);
-      cursor += item.pauseAfterSeconds;
+      cursor += pauseSeconds;
     }
   }
 
