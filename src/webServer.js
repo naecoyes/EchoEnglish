@@ -75,6 +75,10 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { ok: true, message: "Access granted." });
     }
 
+    if (req.method === "GET" && isPublicPwaAsset(url.pathname)) {
+      return await serveFrontend(res, url.pathname);
+    }
+
     const access = await getAccessState(req, url);
     if (access.protected && !access.authenticated) {
       if (req.method === "GET" && acceptsHtml(req)) {
@@ -1544,6 +1548,13 @@ async function serveFrontend(res, pathname) {
 
   sendHtml(res, "<!doctype html><p>Frontend build not found. Run <code>npm run build</code>, then restart <code>npm run web</code>.</p>");
   return true;
+}
+
+function isPublicPwaAsset(pathname) {
+  return pathname === "/manifest.webmanifest"
+    || pathname === "/sw.js"
+    || pathname === "/favicon.ico"
+    || pathname.startsWith("/icons/");
 }
 
 async function serveFile(res, file, cacheControl = "no-store") {

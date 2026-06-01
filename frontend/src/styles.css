@@ -1521,6 +1521,105 @@ video {
   line-height: 1.55;
 }
 
+.draft-progress-meter {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 560px);
+}
+
+.draft-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.draft-progress-meta strong {
+  color: var(--ink);
+}
+
+.draft-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: min(100%, 680px);
+}
+
+.draft-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.58);
+  text-align: left;
+}
+
+.draft-stage > span {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.9);
+  color: #475467;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.draft-stage strong,
+.draft-stage small {
+  display: block;
+}
+
+.draft-stage strong {
+  margin-bottom: 3px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.draft-stage small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.draft-stage.active {
+  border-color: rgba(0, 122, 255, 0.36);
+  background: rgba(225, 241, 255, 0.72);
+  box-shadow: 0 12px 32px rgba(0, 122, 255, 0.1);
+}
+
+.draft-stage.active > span {
+  background: #007aff;
+  color: #fff;
+}
+
+.draft-stage.complete {
+  border-color: rgba(22, 163, 74, 0.28);
+  background: rgba(236, 253, 245, 0.72);
+}
+
+.draft-stage.complete > span {
+  background: #18c37e;
+  color: #fff;
+}
+
+.draft-stage.failed {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(254, 242, 242, 0.78);
+}
+
+.draft-stage.failed > span {
+  background: #ef4444;
+  color: #fff;
+}
+
 .draft-log-list {
   display: grid;
   gap: 8px;
@@ -1639,6 +1738,16 @@ video {
 
   .pipeline-grid {
     grid-template-columns: 1fr;
+  }
+
+  .draft-stage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .draft-progress-meta {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
   }
 
   .status-title-row,

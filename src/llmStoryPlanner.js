@@ -249,11 +249,25 @@ async function callChatJson(config, prompt, maxTokens) {
         max_tokens: maxTokens
       };
 
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body)
-  });
+  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 180000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    }
+    throw new Error(`LLM request failed: ${error.message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
@@ -966,6 +980,7 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
   }
 
   const maxRetries = 3;
+  const useLlmValidation = process.env.ECHOENGLISH_LLM_DRAFT_VALIDATION === "1";
   let lastStory = null;
   let lastValidation = null;
 
@@ -998,6 +1013,12 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
           totalSentences: countStorySentences(story),
           qualityScore: 0
         };
+      } else if (!useLlmValidation) {
+        const sceneCount = story.sections?.length || 0;
+        const totalSentences = countStorySentences(story);
+        console.log(`[Story Generation] Local quality gate passed.`);
+        console.log(`[Story Generation] Scenes: ${sceneCount}, Sentences: ${totalSentences}`);
+        return story;
       }
     } catch (error) {
       validation = {
@@ -1008,11 +1029,16 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
         totalSentences: 0,
         qualityScore: 0
       };
+      if (isNonRetryableDraftError(error)) {
+        lastValidation = validation;
+        console.log(`[Story Generation] Draft request failed before a usable story was returned: ${error.message}`);
+        throw new Error(`LLM draft request failed: ${error.message}`);
+      }
     }
 
     // Validate the generated story
     if (!validation) {
-      console.log(`[Story Generation] Validating story (attempt ${attempt})...`);
+      console.log(`[Story Generation] Running optional LLM validation (attempt ${attempt})...`);
       validation = await validateStoryWithLLM(story, topic, config);
     }
 
@@ -1045,6 +1071,14 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
     console.log(`[Story Generation] Issues:`, lastValidation.issues.join("; "));
   }
   throw new Error(`LLM draft did not pass quality checks after ${maxRetries} attempts: ${(lastValidation?.issues || ["unknown issue"]).join("; ")}`);
+}
+
+function isNonRetryableDraftError(error) {
+  const text = String(error?.message || "").toLowerCase();
+  return text.includes("llm returned http")
+    || text.includes("llm request timed out")
+    || text.includes("llm request failed")
+    || text.includes("api key is required");
 }
 
 function countStorySentences(story) {

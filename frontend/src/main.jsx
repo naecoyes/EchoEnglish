@@ -76,6 +76,7 @@ function App() {
   const [logs, setLogs] = useState(["Waiting for a generation job."]);
   const [status, setStatus] = useState("idle");
   const [form, setForm] = useState({ topic: "A Rainy Day in London", minutes: "15", templateId: DEFAULT_TEMPLATE_ID });
+  const [draftStartedAt, setDraftStartedAt] = useState(null);
 
   const outputSlug = query.get("output");
   const jobId = query.get("jobId");
@@ -261,6 +262,7 @@ function App() {
     if (!draft || outlineTopic !== topic) {
       try {
         setStatus("queued");
+        setDraftStartedAt(Date.now());
         setLogs([
           "Step 1/3: Searching topic context with Tavily.",
           "Step 2/3: Generating full review draft with the configured LLM.",
@@ -275,6 +277,7 @@ function App() {
         setDraftMeta({ imageTarget: result.imageTarget, musicTarget: result.musicTarget, autosaved: result.autosaved });
         setOutlineTopic(topic);
         setStatus("idle");
+        setDraftStartedAt(null);
         setLogs([
           "Step 1/3 complete: Tavily search context ready.",
           "Step 2/3 complete: Review draft generated.",
@@ -282,6 +285,7 @@ function App() {
         ]);
       } catch (error) {
         setStatus("failed");
+        setDraftStartedAt(null);
         setLogs([error.message]);
       }
       return;
@@ -321,6 +325,7 @@ function App() {
     const topic = form.topic.trim() || draft.topic || "Story Video";
     try {
       setStatus("queued");
+      setDraftStartedAt(Date.now());
       setLogs([
         "Step 1/2 active: Sending revision notes to the LLM.",
         "Step 2/2 queued: Refreshing the review draft."
@@ -338,12 +343,14 @@ function App() {
       setDraft(result.draft);
       setDraftMeta({ imageTarget: result.imageTarget, musicTarget: result.musicTarget, autosaved: result.autosaved });
       setStatus("idle");
+      setDraftStartedAt(null);
       setLogs([
         "Step 1/2 complete: Draft revised with your notes.",
         `Step 2/2 active: Revised draft autosaved${result.autosaved?.draftJson ? ` to ${result.autosaved.draftJson}` : ""}. Review it again, then confirm generation.`
       ]);
     } catch (error) {
       setStatus("failed");
+      setDraftStartedAt(null);
       setLogs([error.message]);
     }
   }
@@ -443,6 +450,7 @@ function App() {
             config={config}
             logs={logs}
             status={status}
+            draftStartedAt={draftStartedAt}
             onSubmit={handleGenerateSubmit}
             onRevise={handleReviseDraft}
           />
@@ -565,7 +573,7 @@ function GlassNavigation({ route, navigate }) {
   );
 }
 
-function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFeedback, draftMeta, apiReady, config, logs, status, onSubmit, onRevise }) {
+function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFeedback, draftMeta, apiReady, config, logs, status, draftStartedAt, onSubmit, onRevise }) {
   const confirmed = Boolean(draft && draft.title);
   const busy = status === "queued" || status === "running";
   const failed = status === "failed" || status === "failed_recoverable";
@@ -647,7 +655,7 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
             onRevise={onRevise}
           />
         ) : busy || failed ? (
-          <DraftProgress status={status} logs={logs} />
+          <DraftProgress status={status} logs={logs} startedAt={draftStartedAt} />
         ) : (
           <EmptyState title="No draft yet" text="Enter a topic to generate a complete 15-minute draft for review before video production." />
         )}
@@ -660,9 +668,18 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
   );
 }
 
-function DraftProgress({ status, logs = [] }) {
+function DraftProgress({ status, logs = [], startedAt = null }) {
+  const [now, setNow] = useState(Date.now());
   const failed = status === "failed" || status === "failed_recoverable";
+  const elapsedSeconds = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const draftProgress = getDraftGenerationProgress({ status, logs, elapsedSeconds });
+  const draftStages = getDraftGenerationStages({ status, logs, progress: draftProgress.percent });
   const visibleLogs = logs.length ? logs : ["Preparing draft generation..."];
+  useEffect(() => {
+    if (!startedAt || failed) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt, failed]);
   return (
     <div className={`draft-progress ${failed ? "failed" : ""}`}>
       <div className="draft-progress-orb" aria-hidden="true" />
@@ -673,6 +690,26 @@ function DraftProgress({ status, logs = [] }) {
             ? "The request stopped before a draft was created. Check the message below, adjust Settings if needed, then try again."
             : "EchoEnglish is searching facts and asking the configured LLM to write the full 15-minute draft. This can take one or two minutes."}
         </p>
+      </div>
+      <div className="draft-progress-meter" aria-label="LLM draft generation progress">
+        <div className="progress-track">
+          <span style={{ width: `${draftProgress.percent}%` }} />
+        </div>
+        <div className="draft-progress-meta">
+          <strong>{draftProgress.label}</strong>
+          <span>{draftProgress.percent}%{startedAt ? ` · ${formatElapsed(elapsedSeconds)}` : ""}</span>
+        </div>
+      </div>
+      <div className="draft-stage-grid">
+        {draftStages.map((stage, index) => (
+          <div className={`draft-stage ${stage.state}`} key={stage.id}>
+            <span>{index + 1}</span>
+            <div>
+              <strong>{stage.label}</strong>
+              <small>{stage.detail}</small>
+            </div>
+          </div>
+        ))}
       </div>
       <div className="draft-log-list">
         {visibleLogs.slice(-5).map((line, index) => (
@@ -2060,6 +2097,47 @@ function getProgress(logs, status) {
   return progress;
 }
 
+function getDraftGenerationProgress({ status = "idle", logs = [], elapsedSeconds = 0 }) {
+  const text = (logs || []).join("\n").toLowerCase();
+  if (status === "failed" || status === "failed_recoverable") {
+    return { percent: 100, label: "Draft stopped" };
+  }
+  if (text.includes("review draft generated") || text.includes("draft autosaved")) {
+    return { percent: 100, label: "Draft ready for review" };
+  }
+  if (text.includes("search context ready")) {
+    return { percent: 68, label: "LLM writing full draft" };
+  }
+  if (text.includes("generating full review draft") || text.includes("configured llm")) {
+    const animated = Math.min(92, 24 + Math.floor(elapsedSeconds * 0.9));
+    if (animated >= 82) return { percent: animated, label: "Quality gate checking structure" };
+    if (animated >= 42) return { percent: animated, label: "LLM writing scenes and translations" };
+    return { percent: animated, label: "Collecting search context" };
+  }
+  if (text.includes("searching topic")) {
+    return { percent: Math.min(32, 12 + Math.floor(elapsedSeconds * 1.2)), label: "Searching topic context" };
+  }
+  return { percent: 8, label: "Waiting to start draft" };
+}
+
+function getDraftGenerationStages({ status = "idle", logs = [], progress = 0 }) {
+  const failed = status === "failed" || status === "failed_recoverable";
+  const text = (logs || []).join("\n").toLowerCase();
+  const draftReady = text.includes("review draft generated") || text.includes("draft autosaved");
+  return [
+    makeStep("draft-search", "Tavily Search", "Find factual context and source hints.", draftStageState({ failed, active: progress < 35, complete: progress >= 35 || draftReady || text.includes("search context ready") })),
+    makeStep("draft-llm", "LLM Draft", "Write scenes, translations, and vocabulary.", draftStageState({ failed, active: progress >= 35 && progress < 86, complete: progress >= 86 || draftReady })),
+    makeStep("draft-quality", "Quality Gate", "Check repetition, missing Chinese, and vocabulary.", draftStageState({ failed, active: progress >= 86 && !draftReady, complete: draftReady }))
+  ];
+}
+
+function draftStageState({ failed, active, complete }) {
+  if (failed) return "failed";
+  if (complete) return "complete";
+  if (active) return "active";
+  return "queued";
+}
+
 function getPipelineSteps({ logs = [], status = "idle", hasDraft = false, mode = "generate", stages = null }) {
   if (mode === "job" && stages) {
     const ordered = ["draft", "script-assets", "tts", "images", "music", "compose", "quality"];
@@ -2140,6 +2218,14 @@ function formatSignedSeconds(value) {
   if (!Number.isFinite(number)) return "0.000s";
   const prefix = number > 0 ? "+" : "";
   return `${prefix}${number.toFixed(3)}s`;
+}
+
+function formatElapsed(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  if (total < 60) return `${total}s`;
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}m ${String(secs).padStart(2, "0")}s`;
 }
 
 function fileName(url) {

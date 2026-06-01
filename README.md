@@ -51,6 +51,7 @@ draft -> script-assets -> tts -> images -> music -> compose -> quality
 EchoEnglish blocks weak scripts before expensive media APIs run:
 
 - Repeated boilerplate scenes, repeated full sentences, repeated endings, missing Chinese translations, and missing vocabulary notes fail the draft quality gate.
+- Draft generation uses the local quality gate by default so one good LLM draft can return quickly. Set `ECHOENGLISH_LLM_DRAFT_VALIDATION=1` only if you also want a second LLM judge pass, which is slower.
 - Confirmed drafts are checked again before TTS, images, music, and video composition.
 - TTS manifests, image manifests, music manifests, and timeline manifests are saved for recovery and debugging.
 - The final video timeline is aligned to the real `audio.wav` duration to avoid tail-frame hold or repeated-looking endings.
@@ -457,6 +458,14 @@ Use `POST /api/outputs/{slug}/regenerate-images` to regenerate the current scrip
 ### Draft quality is repetitive
 
 Use the draft review step and revise with feedback before confirming. For factual topics, prefer documentary templates and keep Tavily configured. If Xiaomi text generation is slow or incomplete, switch text generation back to the Qwen-compatible LLM profile.
+
+### Draft generation is slow
+
+The Generate page shows a live draft progress meter for Tavily search, LLM drafting, and the local quality gate. By default EchoEnglish does not run a second LLM self-check because it can double the waiting time and cause long stalls. LLM draft requests time out after 180 seconds by default; override this with `LLM_REQUEST_TIMEOUT_MS=240000` if your selected model is slower. If you explicitly need the extra LLM judge pass, start the server with `ECHOENGLISH_LLM_DRAFT_VALIDATION=1`.
+
+### Manifest returns 401 when external access is enabled
+
+The PWA shell files `manifest.webmanifest`, `sw.js`, `favicon.ico`, and `icons/*` are served without the dashboard PIN so mobile browsers can install the app. APIs and generated outputs still require the configured PIN.
 
 ### Video UI changes needed
 
