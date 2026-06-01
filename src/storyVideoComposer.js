@@ -695,13 +695,27 @@ function renderCoverOverlay(story, frame, layout) {
   // Title area
   const titleFontSize = layout.isPortrait ? (titleLines.length > 1 ? 44 : 52) : (titleLines.length > 1 ? 56 : 68);
   const titleLineHeight = Math.round(titleFontSize * 1.3);
-  const titleStartY = layout.isPortrait ? Math.round(H * 0.28) : Math.round(H * 0.3);
+  const titleHeight = titleLines.length * titleLineHeight;
 
-  // Play button - centered
+  // Spacing and sizing
   const btnSize = layout.isPortrait ? Math.round(W * 0.22) : Math.round(W * 0.12);
-  const btnY = layout.isPortrait ? Math.round(H * 0.52) : Math.round(H * 0.55);
-  const btnRx = Math.round(btnSize * 0.28);
+  const btnGap = Math.round(H * 0.08);
+  const listenGap = Math.round(H * 0.05);
+  const listenHeight = 40;
+  const summaryGap = Math.round(H * 0.05);
+  const summaryLineHeight = Math.round(H * 0.035);
+  const summaryHeight = summaryLines.length * summaryLineHeight;
+  const diffGap = Math.round(H * 0.03);
+  const diffHeight = 30;
 
+  // Dynamic vertical centering
+  const totalContentH = titleHeight + btnGap + btnSize + listenGap + listenHeight + summaryGap + summaryHeight + diffGap + diffHeight;
+  const titleStartY = Math.max(Math.round(H * 0.05), Math.round((H - totalContentH) / 2));
+
+  // Layout positions
+  const btnY = titleStartY + titleHeight + btnGap;
+  const btnRx = Math.round(btnSize * 0.28);
+  
   // Triangle play icon
   const triSize = Math.round(btnSize * 0.32);
   const triLeft = centerX - Math.round(triSize * 0.4);
@@ -710,16 +724,16 @@ function renderCoverOverlay(story, frame, layout) {
   const triBottom = btnY + Math.round(btnSize * 0.5) + Math.round(triSize * 0.5);
 
   // Text below button
-  const listenY = btnY + btnSize + Math.round(H * 0.04);
-  const summaryY = listenY + Math.round(H * 0.06);
-  const diffY = summaryY + summaryLines.length * Math.round(H * 0.035) + Math.round(H * 0.02);
+  const listenY = btnY + btnSize + listenGap;
+  const summaryY = listenY + listenHeight + summaryGap;
+  const diffY = summaryY + summaryHeight + diffGap;
 
   return `
   <!-- Semi-transparent overlay -->
   <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.35"/>
 
   <!-- Main content card -->
-  <rect x="${contentX - 20}" y="${titleStartY - 60}" width="${contentW + 40}" height="${diffY - titleStartY + 100}" rx="32" fill="#fff" opacity="0.92"/>
+  <rect x="${contentX - 20}" y="${titleStartY - 70}" width="${contentW + 40}" height="${diffY - titleStartY + 110}" rx="32" fill="#fff" opacity="0.92"/>
 
   <!-- Brand badge -->
   <rect x="${contentX}" y="${titleStartY - 45}" width="180" height="42" rx="21" fill="#3b82f6"/>
@@ -737,7 +751,7 @@ function renderCoverOverlay(story, frame, layout) {
   <text x="${centerX}" y="${listenY + 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="700" fill="#64748b">边听边读 · 口语跟读</text>
 
   <!-- Summary -->
-  ${summaryLines.map((line, i) => `<text x="${centerX}" y="${summaryY + i * Math.round(H * 0.035)}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="600" fill="#475569">${escapeXml(line)}</text>`).join("\n  ")}
+  ${summaryLines.map((line, i) => `<text x="${centerX}" y="${summaryY + i * summaryLineHeight}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="600" fill="#475569">${escapeXml(line)}</text>`).join("\n  ")}
 
   <!-- Difficulty -->
   <text x="${centerX}" y="${diffY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#94a3b8">Difficulty: U.S. Grade ${escapeXml(gradeLevel)}</text>`;
