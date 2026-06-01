@@ -1,0 +1,82 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: echo-english:latest
+    container_name: echo-english
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3001"
+
+    # ── Persistent storage ────────────────────────────────────────────────────
+    volumes:
+      # Generated videos, audio, images, scripts
+      - ./outputs:/app/outputs
+      # Settings (API keys, models) stored outside the container
+      - ./data:/app/data
+
+    # ── API keys & config (all optional — can also be set via the Settings UI) ─
+    environment:
+      PORT: 3001
+      HOST: 0.0.0.0
+      NODE_ENV: production
+
+      # MiniMax (TTS, Image, Music)
+      # MINIMAX_API_KEY: sk-...
+
+      # LLM (story generation) — defaults to Qwen via DashScope
+      # LLM_API_KEY: sk-...
+      # LLM_API_BASE: https://coding.dashscope.aliyuncs.com/v1
+      # STRIX_LLM: qwen3.6-plus
+
+      # Tavily (web search context)
+      # TAVILY_API_KEY: tvly-...
+
+      # Xiaomi MiMo (optional alternative TTS/LLM)
+      # XIAOMI_API_KEY: ...
+
+      # Google Gemini (optional TTS / Imagen)
+      # GOOGLE_API_KEY: ...
+      # GEMINI_API_KEY: ...
+
+      # Optional: protect the web UI with a PIN
+      # ACCESS_PIN: "1234"
+
+      # ── Host FFmpeg Gateway (VideoToolbox on Mac host) ─────────────────────
+      # Uncomment to route ffmpeg through the host-ffmpeg-worker running on Mac.
+      # This enables Apple Silicon GPU encoding (h264_videotoolbox) from Docker.
+      # FFMPEG_GATEWAY_URL: http://host.docker.internal:4869/run-ffmpeg
+      # FFMPEG_GATEWAY_TOKEN: change-me
+
+    # Required for host.docker.internal to resolve (for Host FFmpeg Gateway)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/config"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  # ── Host FFmpeg Worker (optional — uncomment to start alongside the app) ────
+  # Runs on host network so it can call /opt/homebrew/bin/ffmpeg directly.
+  # Only useful when the app container is on Docker Desktop (Mac).
+  #
+  # ffmpeg-worker:
+  #   image: node:22-alpine
+  #   network_mode: host
+  #   volumes:
+  #     - ./tools:/app/tools:ro
+  #     - ./outputs:/app/outputs
+  #   working_dir: /app
+  #   command: >
+  #     node tools/host-ffmpeg-worker.js
+  #   environment:
+  #     HOST_FFMPEG_WORKER_HOST: 0.0.0.0
+  #     HOST_FFMPEG_WORKER_PORT: 4869
+  #     HOST_FFMPEG_TOKEN: change-me
+  #     HOST_FFMPEG_BIN: /opt/homebrew/bin/ffmpeg
+  #     HOST_FFMPEG_PATH_MAPS: /app/outputs=/Users/Mac/Downloads/ShadowingEnglishVideo/outputs
+  #   restart: unless-stopped

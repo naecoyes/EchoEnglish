@@ -1,0 +1,26 @@
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Dev & build artifacts
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Secrets (injected via env vars or docker compose environment)
+.env
+.env.*
+settings.local.json
+
+# Large generated outputs (mounted as a volume)
+outputs/
+recordings/
+screenshots/
+!docs/screenshots/
+!docs/screenshots/**
+
+# Dev tools
+TODO.md
+tools/

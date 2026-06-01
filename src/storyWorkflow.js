@@ -264,7 +264,20 @@ async function generateStoryWorkflow(options = {}) {
   if (!options.skipAudio) {
     videoSummary = await runStage(options, "compose", async () => {
     await assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options });
-    pushLog(logs, "Composing final MP4 (landscape + portrait)");
+
+    const frames = buildReadingItems(story).length;
+    const totalOrientations = 2;
+    let completedOrientations = 0;
+
+    const makeOnProgress = (orientationLabel) => async ({ completed, total }) => {
+      await notifyStage(options, "compose", "running", {
+        counts: {
+          completed: completedOrientations * total + completed,
+          total: totalOrientations * total
+        },
+        phase: orientationLabel
+      });
+    };
 
     const composeBase = {
       story, readingItems, outputDir,
@@ -276,17 +289,28 @@ async function generateStoryWorkflow(options = {}) {
       logs
     };
 
-    // Always generate landscape video
+    pushLog(logs, "Composing landscape MP4…");
     const landscapeResult = await composeStoryVideo({
-      ...composeBase, orientation: "landscape"
+      ...composeBase,
+      orientation: "landscape",
+      onProgress: makeOnProgress("landscape")
     });
+    completedOrientations = 1;
 
-    // Always generate portrait video
+    pushLog(logs, "Composing portrait MP4…");
     const portraitResult = await composeStoryVideo({
-      ...composeBase, orientation: "portrait"
+      ...composeBase,
+      orientation: "portrait",
+      onProgress: makeOnProgress("portrait")
     });
+    completedOrientations = 2;
 
-    return landscapeResult;
+    return {
+      ...landscapeResult,
+      portraitVideoPath: portraitResult.videoPath,
+      portraitTimelineManifest: portraitResult.timelineManifest,
+      portraitAudioDurationSeconds: portraitResult.audioDurationSeconds
+    };
     });
   } else {
     await notifyStage(options, "compose", "skipped", { counts: { completed: 0, total: 0 } });

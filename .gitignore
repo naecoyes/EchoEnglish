@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.*
 settings.local.json
+data/
 outputs/
 .DS_Store
 screenshots/

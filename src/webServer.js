@@ -2828,7 +2828,7 @@ function renderDashboard() {
     function syncFlow(job) {
       const logs = (job.logs || []).join("\\n");
       if (job.status === "completed") return setFlow("done");
-      if (logs.includes("Composing final MP4") || logs.includes("Rendering frame") || logs.includes("Generating background music")) return setFlow("video");
+      if (logs.includes("Composing landscape") || logs.includes("Composing portrait") || logs.includes("[landscape]") || logs.includes("[portrait]") || logs.includes("Rendering frame") || logs.includes("Generating background music")) return setFlow("video");
       if (logs.includes("Generating audio") || logs.includes("Audio ")) return setFlow("audio");
       return setFlow("script");
     }
@@ -2855,7 +2855,7 @@ function renderDashboard() {
       if (status === "completed") {
         progressFill.style.width = "100%";
         progressFill.style.background = "var(--green)";
-        progressLabel.textContent = "100%";
+        progressLabel.textContent = "100% — Done";
         return;
       }
       if (status === "failed") {
@@ -2867,33 +2867,58 @@ function renderDashboard() {
 
       progressFill.style.background = "var(--blue)";
       let progress = 8;
+      let phaseLabel = "";
       for (let i = (logs || []).length - 1; i >= 0; i -= 1) {
         const text = logs[i];
+        // Portrait frame rendering: 78–96%
+        const portraitMatch = text.match(/\[portrait\] Rendering frame (\\d+)\\/(\\d+)/);
+        // Landscape frame rendering: 60–78%
+        const landscapeMatch = text.match(/\[landscape\] Rendering frame (\\d+)\\/(\\d+)/);
+        // Legacy format (no orientation prefix): 60–96%
+        const frameMatch = !portraitMatch && !landscapeMatch && text.match(/Rendering frame (\\d+)\\/(\\d+)/);
         const audioMatch = text.match(/Audio (\\d+)\\/(\\d+)/);
-        const frameMatch = text.match(/Rendering frame (\\d+)\\/(\\d+)/);
+
+        if (text.includes("Quality report ready") || text.includes("YouTube copy ready")) {
+          progress = 99; phaseLabel = "Finalizing"; break;
+        }
+        if (text.includes("Composing portrait") || text.includes("[portrait]")) {
+          if (portraitMatch) {
+            progress = 78 + Math.floor((Number(portraitMatch[1]) / Number(portraitMatch[2])) * 16);
+          } else {
+            progress = 78;
+          }
+          phaseLabel = "Portrait video"; break;
+        }
         if (text.includes("Encoding final MP4")) {
-          progress = 96;
-          break;
+          progress = 96; phaseLabel = "Encoding MP4"; break;
         }
         if (text.includes("Generating background music") || text.includes("Background music ready")) {
-          progress = 58;
-          break;
+          progress = 58; phaseLabel = "Background music"; break;
+        }
+        if (landscapeMatch) {
+          progress = 60 + Math.floor((Number(landscapeMatch[1]) / Number(landscapeMatch[2])) * 18);
+          phaseLabel = "Landscape video"; break;
+        }
+        if (text.includes("Composing landscape")) {
+          progress = 60; phaseLabel = "Landscape video"; break;
         }
         if (frameMatch) {
-          progress = 62 + Math.floor((Number(frameMatch[1]) / Number(frameMatch[2])) * 32);
-          break;
+          progress = 60 + Math.floor((Number(frameMatch[1]) / Number(frameMatch[2])) * 36);
+          phaseLabel = "Rendering frames"; break;
         }
         if (text.includes("Generating scene images")) {
-          progress = 54;
-          break;
+          progress = 54; phaseLabel = "Scene images"; break;
         }
         if (audioMatch) {
           progress = 12 + Math.floor((Number(audioMatch[1]) / Number(audioMatch[2])) * 42);
-          break;
+          phaseLabel = "Narration"; break;
+        }
+        if (text.includes("Generating audio")) {
+          progress = 12; phaseLabel = "Narration"; break;
         }
       }
       progressFill.style.width = progress + "%";
-      progressLabel.textContent = progress + "%";
+      progressLabel.textContent = progress + "%" + (phaseLabel ? " — " + phaseLabel : "");
     }
 
     function clampMinutes(value) {

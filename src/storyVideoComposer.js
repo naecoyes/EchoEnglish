@@ -21,10 +21,10 @@ function getLayout(orientation) {
   return { isPortrait, W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X };
 }
 
-async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto", orientation = "landscape" }) {
+async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto", orientation = "landscape", onProgress = null }) {
   await assertCommand("ffmpeg", ["-version"]);
   const layout = getLayout(orientation);
-  const slidesDir = path.join(outputDir, "slides");
+  const slidesDir = path.join(outputDir, orientation === "portrait" ? "slides-portrait" : "slides");
   await ensureDir(slidesDir);
 
   const frames = buildLearningFrames(story, readingItems);
@@ -39,7 +39,10 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
   for (let index = 0; index < frames.length; index += 1) {
     const frame = frames[index];
     if (index % 5 === 0 || index === totalFrames - 1) {
-      pushLog(logs, `Rendering frame ${index + 1}/${totalFrames}: ${frame.title || frame.kind}`);
+      pushLog(logs, `[${orientation}] Rendering frame ${index + 1}/${totalFrames}: ${frame.title || frame.kind}`);
+    }
+    if (onProgress) {
+      await onProgress({ orientation, completed: index + 1, total: totalFrames, phase: "frames" });
     }
 
     const sceneImageId = resolveFrameSceneImageId(story, frame);
