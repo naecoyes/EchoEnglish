@@ -586,7 +586,7 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout, i
         imageLayer = `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`;
       } else {
         const imgH = Math.round(layout.W * 9 / 16);
-        const imgY = Math.round(layout.H * 0.36);
+        const imgY = Math.round(layout.H * 0.30);
         imageLayer = `
   <image href="${imageDataUri}" x="${bgX}" y="${bgY}" width="${bgW}" height="${bgH}" preserveAspectRatio="xMidYMid slice" filter="url(#bgBlur)" opacity="0.65"/>
   <rect x="0" y="0" width="${layout.W}" height="${layout.H}" fill="#000" opacity="0.45"/>
@@ -842,7 +842,7 @@ function renderVocabularyOverlay(frame, options = {}) {
   const width = isP ? Math.round(W * 0.48) : Math.round(W * 0.22);
   const x = isP ? (W - width) / 2 : Math.round(W * 0.74);
   const height = hasTranslation ? (isP ? 116 : 104) : (isP ? 76 : 64);
-  const y = isP ? Math.round(H * 0.19) : Math.round(H * 0.14);
+  const y = isP ? Math.round(H * 0.12) : Math.round(H * 0.14);
   
   if (isP) {
     return `
