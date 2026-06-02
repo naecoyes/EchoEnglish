@@ -15,7 +15,7 @@ function getLayout(orientation) {
   const isPortrait = orientation === "portrait";
   const W = isPortrait ? 1080 : 1920;
   const H = isPortrait ? 1920 : 1080;
-  const CAPTION_Y = Math.round(H * (isPortrait ? 0.72 : 0.65));
+  const CAPTION_Y = Math.round(H * (isPortrait ? 0.63 : 0.56));
   const CAPTION_H = isPortrait ? 420 : 280;
   const CAPTION_W = Math.round(W * (isPortrait ? 0.94 : 0.88));
   const CAPTION_X = Math.round((W - CAPTION_W) / 2);
@@ -586,7 +586,7 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout, i
         imageLayer = `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`;
       } else {
         const imgH = Math.round(layout.W * 9 / 16);
-        const imgY = Math.round(layout.H * 0.31);
+        const imgY = Math.round(layout.H * 0.34);
         imageLayer = `
   <image href="${imageDataUri}" x="${bgX}" y="${bgY}" width="${bgW}" height="${bgH}" preserveAspectRatio="xMidYMid slice" filter="url(#bgBlur)" opacity="0.65"/>
   <rect x="0" y="0" width="${layout.W}" height="${layout.H}" fill="#000" opacity="0.45"/>
@@ -842,7 +842,7 @@ function renderVocabularyOverlay(frame, options = {}) {
   const width = isP ? Math.round(W * 0.48) : Math.round(W * 0.22);
   const x = isP ? (W - width) / 2 : Math.round(W * 0.74);
   const height = hasTranslation ? (isP ? 116 : 104) : (isP ? 76 : 64);
-  const y = isP ? Math.round(H * 0.13) : Math.round(H * 0.14);
+  const y = isP ? Math.round(H * 0.16) : Math.round(H * 0.14);
   
   if (isP) {
     return `
@@ -907,15 +907,12 @@ function renderBottomText(frame, layout) {
   const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 3);
   const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
 
-  const isVocab = frame.kind === "vocabulary" || !!frame.vocabWord;
-  const englishFont = isVocab
-    ? (layout.isPortrait ? 44 : 54)
-    : (layout.isPortrait ? (englishLines.length > 2 ? 46 : 52) : (englishLines.length > 2 ? 54 : 64));
-  const chineseFont = isVocab ? (layout.isPortrait ? 32 : 34) : (layout.isPortrait ? 36 : 40);
+  const englishFont = layout.isPortrait ? (englishLines.length > 2 ? 46 : 52) : (englishLines.length > 2 ? 54 : 62);
+  const chineseFont = layout.isPortrait ? 36 : 38;
 
-  const englishLineHeight = Math.round(englishFont * 1.45);
-  const chineseLineHeight = Math.round(chineseFont * 1.55);
-  const gap = layout.isPortrait ? 24 : 36;
+  const englishLineHeight = Math.round(englishFont * 1.55);
+  const chineseLineHeight = Math.round(chineseFont * 1.65);
+  const gap = layout.isPortrait ? 30 : 42;
 
   const englishBlockHeight = englishFont + Math.max(0, englishLines.length - 1) * englishLineHeight;
   const chineseBlockHeight = chineseFont + Math.max(0, chineseLines.length - 1) * chineseLineHeight;
@@ -953,7 +950,7 @@ function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, c
   const shadow = `filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.9))"`;
 
   lines.forEach((line, index) => {
-    const y = startY + index * (fontSize * 1.3);
+    const y = startY + index * (fontSize * 1.55);
 
     if (normalizedTerm) {
       const match = findTermInLine(line, normalizedTerm);
@@ -988,7 +985,7 @@ function renderChineseCaptionLinesAt(lines, vocabTranslation, startY, fontSize, 
   const shadow = `filter="drop-shadow(0px 1px 3px rgba(0,0,0,0.95))"`;
 
   lines.forEach((line, index) => {
-    const y = startY + index * (fontSize * 1.4);
+    const y = startY + index * (fontSize * 1.65);
 
     if (vocabTranslation && line.includes(vocabTranslation)) {
       const matchStart = line.indexOf(vocabTranslation);
