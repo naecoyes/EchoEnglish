@@ -298,7 +298,13 @@ function buildLearningFrames(story, readingItems) {
     }
 
     if (item.kind === "vocabulary-review") {
-      frames.push(createVocabularyReviewFrame(story, timedItem, currentSectionIndex, index));
+      const allVocab = collectReviewVocabulary(story);
+      const pageSize = 20;
+      const totalPages = Math.max(1, Math.ceil(allVocab.length / pageSize));
+      for (let page = 0; page < totalPages; page++) {
+        const pageVocab = allVocab.slice(page * pageSize, (page + 1) * pageSize);
+        frames.push(createVocabularyReviewFrame(story, timedItem, currentSectionIndex, frames.length, pageVocab, page + 1, totalPages));
+      }
       return;
     }
 
@@ -388,15 +394,18 @@ function createVocabularyFrame(story, item, sectionIndex, index) {
   });
 }
 
-function createVocabularyReviewFrame(story, item, sectionIndex, index) {
+function createVocabularyReviewFrame(story, item, sectionIndex, index, pageVocab, page, totalPages) {
   const section = story.sections[sectionIndex] || story.sections[story.sections.length - 1] || story.sections[0];
+  const vocab = pageVocab || collectReviewVocabulary(story);
   return baseFrame(item, sectionIndex, index, {
     kind: "vocab-review",
     title: "Vocabulary Review",
     english: item.text,
     chinese: "难点词汇总复习",
     visual: section?.visual || story.summary,
-    vocabulary: collectReviewVocabulary(story)
+    vocabulary: vocab,
+    vocabPage: page || 1,
+    vocabTotalPages: totalPages || 1
   });
 }
 
@@ -760,67 +769,87 @@ function renderCoverFallbackOverlay(story, layout) {
 }
 function renderVocabularyReviewOverlay(frame, layout) {
   const { W, H } = layout;
-  const vocabulary = Array.isArray(frame.vocabulary) ? frame.vocabulary.slice(0, 54) : [];
+  const vocabulary = Array.isArray(frame.vocabulary) ? frame.vocabulary : [];
+  const page = frame.vocabPage || 1;
+  const totalPages = frame.vocabTotalPages || 1;
   const columns = layout.isPortrait ? 2 : 3;
   const rowsPerColumn = Math.max(1, Math.ceil(vocabulary.length / columns));
-  const columnWidth = layout.isPortrait ? Math.round(W * 0.44) : 560;
-  const startX = layout.isPortrait ? Math.round(W * 0.07) : 170;
-  
-  const panelPad = Math.round(W * 0.0625);
-  const panelW = W - panelPad * 2;
-  const panelH = Math.round(H * 0.833);
-  const panelY = Math.round(H * 0.083);
-  const innerPad = Math.round(W * 0.016);
 
-  const title1Y = panelY + Math.round(layout.isPortrait ? H * 0.035 : H * 0.074);
-  const title2Y = panelY + Math.round(layout.isPortrait ? H * 0.055 : H * 0.115);
-  const startY = title2Y + (layout.isPortrait ? 40 : 60);
+  // Large fonts matching subtitle scale
+  const wordFont    = layout.isPortrait ? 40 : 28;
+  const phoneticFont = layout.isPortrait ? 26 : 18;
+  const chineseFont = layout.isPortrait ? 34 : 24;
+  const rowHeight   = layout.isPortrait ? 76 : 58;
 
-  const dense = rowsPerColumn > 13;
-  const rowHeight = dense ? 39 : 48;
-  const wordFont = layout.isPortrait ? (dense ? 16 : 18) : (dense ? 18 : 21);
-  const phoneticFont = layout.isPortrait ? (dense ? 12 : 14) : (dense ? 14 : 16);
-  const chineseFont = layout.isPortrait ? (dense ? 14 : 16) : (dense ? 16 : 19);
+  // Panel sizing - left/right margin, inner padding
+  const panelSideMargin = layout.isPortrait ? 36 : 80;
+  const panelInnerX     = layout.isPortrait ? 32 : 28;   // text indent inside panel
+  const panelW = W - panelSideMargin * 2;
+  const panelX = panelSideMargin;
+
+  // Title area height
+  const titleAreaH = layout.isPortrait ? 130 : 120;
+  // Dynamic panel height: title + rows + bottom pad
+  const contentH = titleAreaH + rowsPerColumn * rowHeight + 32;
+  const panelH   = Math.min(contentH + 40, Math.round(H * 0.90));
+  // Vertically center the panel
+  const panelY   = Math.round((H - panelH) / 2);
+
+  // Column layout: equal columns inside panel
+  const columnWidth = Math.round(panelW / columns);
+  // Starting X of first column's text (inside panel left edge)
+  const startX = panelX + panelInnerX;
+
+  // Vertical start of word rows (after title)
+  const title1Y = panelY + (layout.isPortrait ? 60 : 55);
+  const title2Y = panelY + (layout.isPortrait ? 98 : 90);
+  const startY  = panelY + titleAreaH + wordFont; // +wordFont for SVG baseline
+
+  const innerPad = layout.isPortrait ? 18 : 22;
+  const pageLabel = totalPages > 1 ? ` (${page}/${totalPages})` : "";
 
   return `
   <rect x="0" y="0" width="${W}" height="${H}" fill="#020817" opacity="0.52"/>
-  <rect x="${panelPad}" y="${panelY}" width="${panelW}" height="${panelH}" rx="44" fill="#f8fbff" opacity="0.94"/>
-  <rect x="${panelPad + innerPad}" y="${panelY + innerPad * 2}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 4}" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
-  <text x="${panelPad + innerPad * 2.5}" y="${title1Y}" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
-  <text x="${panelPad + innerPad * 2.5}" y="${title2Y}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
+  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="44" fill="#f8fbff" opacity="0.94"/>
+  <rect x="${panelX + innerPad}" y="${panelY + innerPad}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 2}" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
+  <text x="${startX}" y="${title1Y}" font-family="Arial, sans-serif" font-size="${layout.isPortrait ? 36 : 38}" font-weight="900" letter-spacing="4" fill="#1d4ed8">VOCABULARY REVIEW${escapeXml(pageLabel)}</text>
+  <text x="${startX}" y="${title2Y}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${layout.isPortrait ? 28 : 30}" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
   ${vocabulary.map((entry, index) => {
     const column = Math.floor(index / rowsPerColumn);
-    const row = index % rowsPerColumn;
+    const row    = index % rowsPerColumn;
     const x = startX + column * columnWidth;
     const y = startY + row * rowHeight;
-    const word = entry.word || entry[0] || "";
+    const word        = entry.word        || entry[0] || "";
     const translation = entry.translation || entry[1] || "";
-    const phonetic = entry.phonetic || entry[2] || "";
-    return renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait: layout.isPortrait });
+    const phonetic    = entry.phonetic    || entry[2] || "";
+    return renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait: layout.isPortrait, columnWidth });
   }).join("\n  ")}`;
 }
 
-function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait }) {
-  const wordText = fitSvgText(word, isPortrait ? 15 : 22);
-  const phoneticText = fitSvgText(phonetic, isPortrait ? 17 : 24);
+function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait, columnWidth }) {
+  const colW = columnWidth || (isPortrait ? 480 : 560);
+  // proportional offsets within column
+  const pOffset = Math.round(colW * 0.38);  // phonetic starts at 38% of column
+  const tOffset = Math.round(colW * 0.66);  // chinese starts at 66% of column
+  const lineW   = Math.round(colW * 0.93);
+
+  const wordText = fitSvgText(word, isPortrait ? 14 : 18);
+  const phoneticText = fitSvgText(phonetic, isPortrait ? 14 : 20);
   const cleanTranslation = translation && translation !== "重点词" ? translation : "";
-  const translationText = cleanTranslation ? fitSvgText(cleanTranslation, isPortrait ? 13 : 18) : "";
-  
-  const wordSize = fitFontSize(wordText, wordFont, isPortrait ? 105 : 150);
-  const phoneticSize = fitFontSize(phoneticText, phoneticFont, isPortrait ? 95 : 135);
-  const translationSize = translationText ? fitFontSize(translationText, chineseFont, isPortrait ? 130 : 205, true) : chineseFont;
-  
-  const pX = isPortrait ? x + 115 : x + 168;
-  const tX = isPortrait ? x + 230 : x + 326;
-  const lineW = isPortrait ? 415 : 510;
-  const baseline = y + Math.max(20, Math.round(rowHeight * 0.58));
-  
+  const translationText = cleanTranslation ? fitSvgText(cleanTranslation, isPortrait ? 10 : 14) : "";
+
+  const wordSize        = fitFontSize(wordText,        wordFont,        Math.round(colW * 0.35));
+  const phoneticSize    = fitFontSize(phoneticText,    phoneticFont,    Math.round(colW * 0.26));
+  const translationSize = translationText ? fitFontSize(translationText, chineseFont, Math.round(colW * 0.32), true) : chineseFont;
+
+  const baseline = y + Math.max(20, Math.round(rowHeight * 0.62));
+
   return `
   <g>
-    <line x1="${x}" y1="${y + rowHeight - 7}" x2="${x + lineW}" y2="${y + rowHeight - 7}" stroke="#dbeafe" stroke-width="1.2" opacity="0.58"/>
+    <line x1="${x}" y1="${y + rowHeight - 8}" x2="${x + lineW}" y2="${y + rowHeight - 8}" stroke="#dbeafe" stroke-width="1.4" opacity="0.55"/>
     <text x="${x}" y="${baseline}" font-family="Arial, sans-serif" font-size="${wordSize}" font-weight="900" fill="#0f172a">${escapeXml(wordText)}</text>
-    <text x="${pX}" y="${baseline}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
-    ${translationText ? `<text x="${tX}" y="${baseline}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>` : ""}
+    <text x="${x + pOffset}" y="${baseline}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
+    ${translationText ? `<text x="${x + tOffset}" y="${baseline}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#334155">${escapeXml(translationText)}</text>` : ""}
   </g>`;
 }
 
