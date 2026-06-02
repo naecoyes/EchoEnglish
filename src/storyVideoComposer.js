@@ -301,9 +301,17 @@ function buildLearningFrames(story, readingItems) {
       const allVocab = collectReviewVocabulary(story);
       const pageSize = 20;
       const totalPages = Math.max(1, Math.ceil(allVocab.length / pageSize));
+      // Distribute time across pages: each page gets at least 5 seconds
+      const itemStart = timedItem.startSeconds || 0;
+      const itemEnd = timedItem.frameEndSeconds || timedItem.endSeconds || itemStart + totalPages * 5;
+      const totalDuration = Math.max(totalPages * 5, itemEnd - itemStart);
+      const pageDuration = totalDuration / totalPages;
       for (let page = 0; page < totalPages; page++) {
         const pageVocab = allVocab.slice(page * pageSize, (page + 1) * pageSize);
-        frames.push(createVocabularyReviewFrame(story, timedItem, currentSectionIndex, frames.length, pageVocab, page + 1, totalPages));
+        const pageStart = itemStart + page * pageDuration;
+        const pageEnd = pageStart + pageDuration;
+        const pagedItem = { ...timedItem, startSeconds: pageStart, endSeconds: pageEnd, frameEndSeconds: pageEnd };
+        frames.push(createVocabularyReviewFrame(story, pagedItem, currentSectionIndex, frames.length, pageVocab, page + 1, totalPages));
       }
       return;
     }
