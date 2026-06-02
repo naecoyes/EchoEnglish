@@ -15,7 +15,7 @@ function getLayout(orientation) {
   const isPortrait = orientation === "portrait";
   const W = isPortrait ? 1080 : 1920;
   const H = isPortrait ? 1920 : 1080;
-  const CAPTION_Y = Math.round(H * (isPortrait ? 0.66 : 0.58));
+  const CAPTION_Y = Math.round(H * (isPortrait ? 0.72 : 0.75));
   const CAPTION_H = isPortrait ? 420 : 280;
   const CAPTION_W = Math.round(W * (isPortrait ? 0.94 : 0.88));
   const CAPTION_X = Math.round((W - CAPTION_W) / 2);
