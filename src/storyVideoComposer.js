@@ -15,7 +15,7 @@ function getLayout(orientation) {
   const isPortrait = orientation === "portrait";
   const W = isPortrait ? 1080 : 1920;
   const H = isPortrait ? 1920 : 1080;
-  const CAPTION_Y = Math.round(H * (isPortrait ? 0.72 : 0.65));
+  const CAPTION_Y = Math.round(H * (isPortrait ? 0.72 : 0.68));
   const CAPTION_H = isPortrait ? 420 : 280;
   const CAPTION_W = Math.round(W * (isPortrait ? 0.94 : 0.88));
   const CAPTION_X = Math.round((W - CAPTION_W) / 2);
@@ -907,8 +907,10 @@ function renderBottomText(frame, layout) {
   const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 3);
   const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
 
-  const englishFont = englishLines.length > 2 ? 46 : 52;
-  const chineseFont = layout.isPortrait ? 36 : 34;
+  const englishFont = layout.isPortrait
+    ? (englishLines.length > 2 ? 46 : 52)
+    : (englishLines.length > 2 ? 50 : 58);
+  const chineseFont = layout.isPortrait ? 36 : 36;
 
   const englishLineHeight = Math.round(englishFont * 1.65);
   const chineseLineHeight = Math.round(chineseFont * 1.75);
