@@ -32,10 +32,10 @@ function renderYoutubeCoverContent(story, { W, H }) {
   const summaryLines = wrapText(summaryText(story), 58, 3);
   const difficulty = difficultyText(story);
   const cx = Math.round(W / 2);
-  const brandY = 50;
+  const brandY = 100;
   const titleFont = titleLines.length > 2 ? 46 : 52;
   const titleLineHeight = Math.round(titleFont * 1.18);
-  const titleStartY = 112;
+  const titleStartY = 160;
   const titleBlock = titleLines.map((line, index) => centeredTextLine(line, cx, titleStartY + index * titleLineHeight, titleFont, 900, "#ffffff", 0, true)).join("");
   const playY = Math.max(318, titleStartY + titleLines.length * titleLineHeight + 96);
   const playR = 78;
