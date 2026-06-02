@@ -196,6 +196,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     "{",
     '  "title": "string",',
     '  "summary": "string",',
+    '  "coverImagePrompt": "A 45-70 word creative seed for the video cover image. Describe the strongest visual hook, subject, mood, and setting. Do not request embedded text, signs, logos, subtitles, typography, or placeholder words.",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
     `    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": ${sentencesPerScene - 1}, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}`,

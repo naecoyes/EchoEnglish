@@ -5,7 +5,7 @@ const { initImageManifest, updateImageManifest } = require("./outputManifests");
 const { fetchJsonWithPolicy } = require("./apiLimiter");
 const { validateImageOrThrow } = require("./imageQuality");
 
-async function generateImages({ scenes, outputDir, apiKey, baseUrl, model, batchSize = 3, onProgress }) {
+async function generateImages({ scenes, outputDir, apiKey, baseUrl, model, aspectRatio = "16:9", batchSize = 3, onProgress }) {
   if (!apiKey) throw new Error("Google API key is required for Imagen generation.");
   const imagesDir = path.join(outputDir, "images");
   await ensureDir(imagesDir);
@@ -49,6 +49,7 @@ async function generateImages({ scenes, outputDir, apiKey, baseUrl, model, batch
         apiKey,
         baseUrl,
         model,
+        aspectRatio,
         batchSize
       });
       await updateImageManifest(outputDir, scene.id, { status: "completed", imagePath: outputPath, error: null });
@@ -67,14 +68,14 @@ async function reportProgress(onProgress, progress) {
   await onProgress(progress);
 }
 
-async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, batchSize = 3 }) {
+async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, aspectRatio = "16:9", batchSize = 3 }) {
   if (scene.hasPeople && batchSize > 1) {
-    return generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, batchSize: clampBatchSize(batchSize) });
+    return generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, aspectRatio, batchSize: clampBatchSize(batchSize) });
   }
-  return generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model });
+  return generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, aspectRatio });
 }
 
-async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model }) {
+async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, aspectRatio = "16:9" }) {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await updateImageManifest(outputDir, scene.id, { status: "running", attempts: attempt, error: null });
@@ -83,7 +84,8 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
         apiKey,
         baseUrl,
         model,
-        prompt: scene.imagePrompt || buildPrompt(scene),
+        prompt: scene.imagePrompt || buildPrompt(scene, aspectRatio),
+        aspectRatio,
         sampleCount: 1
       });
       const bytes = buffers[0];
@@ -106,7 +108,7 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
   throw lastError;
 }
 
-async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, batchSize }) {
+async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, baseUrl, model, aspectRatio, batchSize }) {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await updateImageManifest(outputDir, scene.id, { status: "running", attempts: attempt, error: null, batchSize });
@@ -115,7 +117,8 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
         apiKey,
         baseUrl,
         model,
-        prompt: scene.imagePrompt || buildPrompt(scene),
+        prompt: scene.imagePrompt || buildPrompt(scene, aspectRatio),
+        aspectRatio,
         sampleCount: batchSize
       });
 
@@ -159,16 +162,16 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
   throw lastError;
 }
 
-async function requestImagen({ apiKey, baseUrl, model, prompt, sampleCount = 1 }) {
+async function requestImagen({ apiKey, baseUrl, model, prompt, aspectRatio = "16:9", sampleCount = 1 }) {
   const url = `${(baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "")}/models/${encodeURIComponent(model || "imagen-4.0-generate-001")}:predict`;
   const safePrompt = normalizeImagenPrompt(prompt);
-  const payload = await requestImagenPayload({ apiKey, url, prompt: safePrompt, sampleCount });
+  const payload = await requestImagenPayload({ apiKey, url, prompt: safePrompt, aspectRatio, sampleCount });
   const buffers = extractImageBuffers(payload);
   if (buffers.length) return buffers;
 
-  const fallbackPrompt = buildSafeImagenFallbackPrompt(safePrompt);
+  const fallbackPrompt = buildSafeImagenFallbackPrompt(safePrompt, aspectRatio);
   if (fallbackPrompt && fallbackPrompt !== safePrompt) {
-    const fallbackPayload = await requestImagenPayload({ apiKey, url, prompt: fallbackPrompt, sampleCount: 1 });
+    const fallbackPayload = await requestImagenPayload({ apiKey, url, prompt: fallbackPrompt, aspectRatio, sampleCount: 1 });
     const fallbackBuffers = extractImageBuffers(fallbackPayload);
     if (fallbackBuffers.length) return fallbackBuffers;
     throw new Error(`${formatImagenEmptyResponse(fallbackPayload)} Fallback prompt was also empty.`);
@@ -177,7 +180,7 @@ async function requestImagen({ apiKey, baseUrl, model, prompt, sampleCount = 1 }
   throw new Error(formatImagenEmptyResponse(payload));
 }
 
-async function requestImagenPayload({ apiKey, url, prompt, sampleCount }) {
+async function requestImagenPayload({ apiKey, url, prompt, aspectRatio, sampleCount }) {
   return await fetchJsonWithPolicy("google:image", url, {
     method: "POST",
     headers: {
@@ -188,7 +191,7 @@ async function requestImagenPayload({ apiKey, url, prompt, sampleCount }) {
       instances: [{ prompt }],
       parameters: {
         sampleCount: clampBatchSize(sampleCount),
-        aspectRatio: "16:9",
+        aspectRatio: aspectRatio || "16:9",
         personGeneration: "allow_adult"
       }
     })
@@ -210,7 +213,7 @@ function extractImageBuffers(payload) {
     .filter((buffer) => buffer.length > 32);
 }
 
-function buildSafeImagenFallbackPrompt(prompt) {
+function buildSafeImagenFallbackPrompt(prompt, aspectRatio = "16:9") {
   const scene = extractPromptField(prompt, "Scene setting:")
     || extractPromptField(prompt, "Scene:")
     || extractPromptField(prompt, "Base scene prompt:");
@@ -219,7 +222,7 @@ function buildSafeImagenFallbackPrompt(prompt) {
   const safeScene = sanitizeImagenPromptText(scene || prompt);
   const safeMoment = sanitizeImagenPromptText(moment);
   return normalizeImagenPrompt([
-    "16:9 photorealistic documentary still image for an English learning video.",
+    `${aspectRatio} photorealistic documentary still image for an English learning video.`,
     safeScene ? `Scene: ${safeScene}.` : "Scene: a realistic historical technology setting with simple human activity.",
     safeMoment ? `Story moment: ${safeMoment}.` : "",
     "Use generic adult people only, photographed from behind or at a distance, with non-identifiable faces.",
@@ -335,6 +338,7 @@ async function findExistingBatchImage(imagesDir, sceneId) {
 
 async function removeStaleSceneImages(imagesDir, sceneIds) {
   const allowed = new Set(sceneIds);
+  const currentGroup = imageSceneGroup(sceneIds[0] || "");
   try {
     const entries = await fs.readdir(imagesDir);
     for (const entry of entries) {
@@ -342,11 +346,20 @@ async function removeStaleSceneImages(imagesDir, sceneIds) {
       const sceneId = entry
         .replace(/\.(png|jpe?g|webp)$/i, "")
         .replace(/_batch_\d+$/i, "");
-      if (!allowed.has(sceneId)) {
+      if (!allowed.has(sceneId) && imageSceneGroup(sceneId) === currentGroup) {
         await fs.unlink(path.join(imagesDir, entry)).catch(() => {});
       }
     }
   } catch {}
+}
+
+function imageSceneGroup(sceneId) {
+  const id = String(sceneId || "");
+  if (id.startsWith("cover-youtube")) return "cover-youtube";
+  if (id.startsWith("cover-vertical")) return "cover-vertical";
+  if (id.startsWith("cover")) return "cover";
+  if (id.startsWith("podcast-host")) return "podcast";
+  return "scene";
 }
 
 async function validateCachedImage(cachedPath, imagesDir, sceneId) {
@@ -383,9 +396,9 @@ function detectImageExtension(bytes) {
   return ".png";
 }
 
-function buildPrompt(scene) {
+function buildPrompt(scene, aspectRatio = "16:9") {
   return [
-    "Create a 16:9 photorealistic cinematic still image for an English shadowing video.",
+    `Create a ${aspectRatio} photorealistic cinematic still image for an English shadowing video.`,
     scene.title ? `Video title: ${scene.title}.` : "",
     scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
     scene.visualStyle ? `Visual style: ${scene.visualStyle}.` : "",

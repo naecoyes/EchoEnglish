@@ -260,6 +260,7 @@ Open `http://127.0.0.1:3002/settings` to configure:
 - Xiaomi MiMo key, TTS key, base URLs, models, and voices
 - Google API key, Imagen model, Gemini TTS model, and voice
 - TTS provider and image provider
+- Separate cover image provider: MiniMax, Google Imagen, inherit scene image provider, or disabled
 - Music track count
 - Access PIN
 - Video encoder: `auto`, `cpu-libx264`, `apple-videotoolbox`, `nvidia-nvenc`, or `intel-qsv`
@@ -297,6 +298,40 @@ Every generation automatically produces both landscape and portrait videos:
 - `final-portrait.mp4` — 1080×1920 (9:16 portrait)
 
 Portrait mode reuses the same scene images — center-cropped to fill the portrait canvas. Compose progress is tracked separately for each orientation (landscape 60–78%, portrait 78–96%).
+
+## Cover Image Layer
+
+Cover generation is separate from story scene image generation:
+
+- `cover-prompts.md` stores the dedicated cover prompts.
+- `images/cover-youtube.png` is a finished 16:9 YouTube-style cover with EchoEnglish title, description, difficulty, and CTA text.
+- `images/cover-vertical.png` is a finished 9:16 Douyin/TikTok/Reels-style cover with the same metadata adapted for vertical viewing.
+- `images/cover-youtube-bg.*` and `images/cover-vertical-bg.*` are raw model-generated backgrounds when a new background is needed.
+- Scene prompts stay in `image-prompts.md` and are generated independently from cover prompts.
+
+The cover layer sits above the MiniMax and Google Imagen providers. In Settings -> Image, choose a scene image provider and a separate cover image provider. `Inherit from Scenes` uses the same provider as scene backgrounds.
+
+Cover prompts are generated from the topic, title, summary, template, and story visual style, then wrapped into universal provider-safe prompts. They intentionally avoid embedded text, logos, subtitles, and placeholder words because EchoEnglish renders the text layer locally. The overlay includes `ECHOENGLISH`, `今天的故事`, the video title, a short description, the estimated U.S. grade difficulty, and `Listen & Shadow`. The YouTube cover favors a high-contrast 16:9 thumbnail; the vertical cover favors a mobile-first 9:16 first frame.
+
+The video first frame uses the same local cover renderer as the downloadable covers. Image models only create the photographic background; EchoEnglish always overlays the title and learning text locally so generated covers do not contain `Your Text`, broken letters, or random captions.
+
+Preview includes:
+
+- `Generate Covers` to regenerate only the two cover images.
+- `DL YouTube Cover` to download the landscape cover.
+- `DL Vertical Cover` to download the short-video cover.
+
+## Video UI Rendering
+
+The MP4 UI is rendered locally from existing assets:
+
+- Cover/homepage: full-screen photo background, cinematic dark overlay, centered title, large play button, summary, and difficulty.
+- Captions: English is primary and centered; Chinese is smaller with optimized line heights (1.45x for English, 1.55x for Chinese) and custom spacing. Text is layered over a modern dark panel (`#000000` with 0.72 opacity and rounded corners) with drop shadows for maximum readability.
+- Keyword highlights: high-contrast yellow background (`#facc15`) with precise width estimation and rounded corners for active English vocabulary, and matching inline translation highlight in Chinese.
+- Vocabulary card: flat, sleek deep-dark card (`#0f172a` with 0.85 opacity, rounded corners) placed in the upper corner (or center top in portrait), showing the word and its Chinese translation (phonetics omitted for visual cleanliness).
+- Podcast mode: two fixed host images and role-based captions/voices.
+
+Use **Re-render UI** from Preview to rebuild `slides/`, `slides-portrait/`, `final.mp4`, and `final-portrait.mp4` without calling LLM, TTS, image, or music APIs.
 
 ## Hardware Video Encoding
 
@@ -350,6 +385,18 @@ Each generated video includes `youtube-copy.json` and `youtube-copy.md` with:
 - Tags
 - Pinned comment
 - Thumbnail text suggestions
+
+## Regression Samples
+
+Use these samples when checking a release:
+
+| Template | Topic | Checks |
+| --- | --- | --- |
+| Company Origin Story | `Apple company development history` | factual timeline, no fictional characters, YouTube/vertical covers, no repeated ending |
+| Daily Life Story | `The Morning Rush` | story pacing, 2-3 image beats per minute, clear bilingual captions |
+| Podcast Conversation | `How to avoid mental exhaustion` | two host images only, Mia/Milo-style voices, dialogue captions aligned by speaker |
+
+For each sample, verify `quality-report.json`, `timeline-manifest.json`, subtitle/audio/video duration alignment, and the last two minutes of the MP4.
 
 ## CLI
 

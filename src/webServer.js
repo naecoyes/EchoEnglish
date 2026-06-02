@@ -14,6 +14,7 @@ const { generateImages: generateMiniMaxImages } = require("./minimaxImage");
 const { generateImages: generateGoogleImages } = require("./googleImage");
 const { createPureStory, createStoryOutline, generateVideoTemplate, getLlmConfig, reviseStoryDraft } = require("./llmStoryPlanner");
 const { renderMarkdown } = require("./renderers");
+const { generateCoverImageSet, resolveCoverProvider } = require("./coverImages");
 const { MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
 const {
   clearSavedApiKey,
@@ -318,6 +319,11 @@ const server = http.createServer(async (req, res) => {
       return await regenerateOutputImages(res, slug);
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/regenerate-cover")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await regenerateOutputCover(res, slug);
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/continue")) {
       const id = url.pathname.split("/").at(-2);
       return await continueStoryJob(res, id);
@@ -460,6 +466,7 @@ async function runStoryJobAsync(job) {
 
       const ttsProvider = settings.media?.ttsProvider || (settings.provider === "xiaomi" ? "xiaomi" : "minimax");
       const imageMode = settings.media?.imageProvider || "minimax";
+      const coverImageMode = settings.media?.coverImageProvider || "minimax";
       const template = job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id
         ? getVideoTemplate(job.request?.templateId || job.request?.storyDraft?.template?.id || job.request?.outline?.template?.id)
         : await generateVideoTemplate({ topic: job.topic, minutes: job.minutes });
@@ -489,6 +496,7 @@ async function runStoryJobAsync(job) {
         outputRoot: OUTPUT_ROOT,
         ttsProvider,
         imageMode,
+        coverImageMode,
         apiKey: settings.minimaxApiKey,
         minimaxModel: settings.models.tts,
         minimaxVoice: settings.minimax.englishVoice,
@@ -560,7 +568,8 @@ function validateGenerationSettings(settings) {
   if (settings.media?.ttsProvider === "xiaomi" && !(settings.xiaomi?.ttsApiKey || settings.xiaomi?.apiKey)) {
     return "Xiaomi TTS API key is required when Xiaomi TTS is active. Open Settings and save your Xiaomi TTS key.";
   }
-  if ((settings.media?.ttsProvider === "google" || settings.media?.imageProvider === "google") && !settings.google?.apiKey) {
+  const resolvedCoverProvider = resolveCoverProvider(settings.media?.coverImageProvider, settings.media?.imageProvider);
+  if ((settings.media?.ttsProvider === "google" || settings.media?.imageProvider === "google" || resolvedCoverProvider === "google") && !settings.google?.apiKey) {
     return "Google API key is required when Google TTS or Imagen is selected. Open Settings and save your Google key.";
   }
   if (settings.provider !== "xiaomi" && !settings.llm.apiKey) {
@@ -987,9 +996,12 @@ async function outputPathsForSlug(slug) {
     subtitles: await fileExists(path.join(outputDir, "subtitles.srt")) ? `${base}subtitles.srt` : null,
     audio: await fileExists(path.join(outputDir, "audio.wav")) ? `${base}audio.wav` : null,
     music: await fileExists(musicPath) ? `${base}music/background.mp3` : null,
+    coverYoutube: await outputImageUrl(slug, "cover-youtube"),
+    coverVertical: await outputImageUrl(slug, "cover-vertical"),
     draftJson: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.json")) ? `${base}draft.json` : null,
     draftMd: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.md")) ? `${base}draft.md` : null,
     imagePrompts: await fileExists(path.join(outputDir, "image-prompts.md")) ? `${base}image-prompts.md` : null,
+    coverPrompts: await fileExists(path.join(outputDir, "cover-prompts.md")) ? `${base}cover-prompts.md` : null,
     scriptJson: await fileExists(path.join(outputDir, "script.json")) ? `${base}script.json` : null,
     jobState: await fileExists(path.join(OUTPUT_ROOT, slug, "job-state.json")) ? `${base}job-state.json` : null,
     audioManifest: await fileExists(path.join(OUTPUT_ROOT, slug, "audio-manifest.json")) ? `${base}audio-manifest.json` : null,
@@ -1001,6 +1013,24 @@ async function outputPathsForSlug(slug) {
     youtubeCopy: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.md")) ? `${base}youtube-copy.md` : null,
     youtubeCopyJson: await fileExists(path.join(OUTPUT_ROOT, slug, "youtube-copy.json")) ? `${base}youtube-copy.json` : null
   };
+}
+
+async function outputImageUrl(slug, sceneId) {
+  const imagesDir = path.join(OUTPUT_ROOT, slug, "images");
+  const base = `/outputs/${slug}/images/`;
+  for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+    const direct = path.join(imagesDir, `${sceneId}${ext}`);
+    if (await fileExists(direct)) return `${base}${sceneId}${ext}`;
+  }
+  try {
+    const entries = await fs.readdir(imagesDir);
+    const batch = entries
+      .filter((entry) => entry.startsWith(`${sceneId}_batch_`) && /\.(png|jpe?g|webp)$/i.test(entry))
+      .sort()[0];
+    return batch ? `${base}${batch}` : null;
+  } catch {
+    return null;
+  }
 }
 
 async function analyzeOutputQuality(res, slugInput) {
@@ -1339,6 +1369,56 @@ async function regenerateOutputImages(res, slugInput) {
     imageProvider,
     imageCount: results.length,
     ...rerender
+  });
+}
+
+async function regenerateOutputCover(res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const story = await readOptionalJson(scriptPath);
+  if (!story) {
+    return sendJson(res, { error: "script.json is required for cover regeneration." }, 404);
+  }
+
+  const settings = await getEffectiveSettings();
+  const provider = resolveCoverProvider(settings.media?.coverImageProvider, settings.media?.imageProvider);
+  if (provider !== "minimax" && provider !== "google") {
+    return sendJson(res, { error: "Cover image provider is disabled. Choose MiniMax, Google, or Inherit in Settings." }, 400);
+  }
+
+  const logs = [];
+  const coverResult = await generateCoverImageSet({
+    story,
+    outputDir,
+    provider,
+    settings,
+    minimaxApiKey: settings.minimaxApiKey,
+    minimaxImageModel: settings.models?.image || MINIMAX_IMAGE_MODEL,
+    googleImageModel: settings.google?.imageModel,
+    logs
+  });
+  await fs.writeFile(scriptPath, `${JSON.stringify(story, null, 2)}\n`, "utf8");
+
+  const outputs = await outputPathsForSlug(slug);
+  return sendJson(res, {
+    ok: true,
+    slug,
+    provider: coverResult.provider,
+    coverPrompts: outputs.coverPrompts,
+    coverYoutube: outputs.coverYoutube,
+    coverVertical: outputs.coverVertical,
+    outputs,
+    generated: coverResult.results.map((item) => ({
+      sceneId: item.sceneId,
+      imagePath: item.imagePath,
+      sourceImagePath: item.sourceImagePath
+    })),
+    logs
   });
 }
 
@@ -3259,6 +3339,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+server.setTimeout(15 * 60 * 1000);
 server.listen(PORT, HOST, () => {
   const localUrl = `http://127.0.0.1:${PORT}`;
   const networkUrls = getLanAddresses().map((address) => `http://${address}:${PORT}`);

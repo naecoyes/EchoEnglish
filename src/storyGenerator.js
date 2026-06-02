@@ -262,6 +262,7 @@ async function generateStory({ topic, targetDurationMinutes, level, annotationSt
     generatedAt: new Date().toISOString(),
     defaults,
     summary: baseStory.summary,
+    coverImagePrompt: baseStory.coverImagePrompt,
     storyboardDesign: baseStory.storyboardDesign || {
       visualStyle: "cinematic beginner storybook illustration",
       learningFocus: "common beginner words and useful phrases",

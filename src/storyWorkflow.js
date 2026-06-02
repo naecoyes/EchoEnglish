@@ -19,6 +19,8 @@ const { classifyError } = require("./errorClassifier");
 const { enrichStoryVocabulary } = require("./vocabularyTools");
 const { writeYouTubeCopy } = require("./youtubeCopy");
 const { assertStoryQuality, inspectStoryQuality } = require("./storyQuality");
+const { buildCoverPromptSet, renderCoverPrompts } = require("./coverPrompts");
+const { generateCoverImageSet, resolveCoverProvider } = require("./coverImages");
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +53,7 @@ async function generateStoryWorkflow(options = {}) {
   if (options.template && !story.template) {
     story.template = options.template;
   }
+  story.coverPrompts = buildCoverPromptSet(story);
   assertStoryQuality(story, {
     minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0
   });
@@ -150,10 +153,13 @@ async function generateStoryWorkflow(options = {}) {
     markdown: "script.md",
     subtitles: "subtitles.srt",
     imagePrompts: "image-prompts.md",
+    coverPrompts: "cover-prompts.md",
     audio: options.skipAudio ? null : "audio.wav",
     music: !options.skipAudio && resolveMusicMode(options.musicMode) === "minimax" ? "music/background.mp3" : null,
     video: options.skipAudio ? null : "final.mp4",
     videoPortrait: options.skipAudio ? null : "final-portrait.mp4",
+    coverYoutube: "images/cover-youtube.png",
+    coverVertical: "images/cover-vertical.png",
     timelineManifest: options.skipAudio ? null : "timeline-manifest.json",
     timelineManifestPortrait: options.skipAudio ? null : "timeline-manifest-portrait.json",
     qualityReport: "quality-report.json"
@@ -186,49 +192,74 @@ async function generateStoryWorkflow(options = {}) {
     await fs.writeFile(path.join(outputDir, "script.json"), `${JSON.stringify(nextScriptJson, null, 2)}\n`);
     await fs.writeFile(path.join(outputDir, "script.md"), renderMarkdown(story), "utf8");
     await fs.writeFile(path.join(outputDir, "image-prompts.md"), renderImagePrompts(story), "utf8");
+    await fs.writeFile(path.join(outputDir, "cover-prompts.md"), renderCoverPrompts(story), "utf8");
     await fs.writeFile(path.join(outputDir, "subtitles.srt"), renderSrt(readingItems), "utf8");
     return nextScriptJson;
   });
 
-  if (options.imageMode === "minimax" || options.imageMode === "google") {
+  if (options.imageMode === "minimax" || options.imageMode === "google" || options.coverImageMode === "minimax" || options.coverImageMode === "google") {
     await runStage(options, "images", async () => {
-    const imageProviderName = options.imageMode === "google" ? "Google Imagen" : "MiniMax";
-    pushLog(logs, `Generating scene images with ${imageProviderName}`);
-    const scenes = getUniqueImageScenes(story);
-    if (isPodcastStory(story)) {
-      await restoreSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
-    } else {
-      await removePodcastHostImages(outputDir, logs);
+    let totalCompleted = 0;
+    let totalScenes = 0;
+    const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
+
+    // 1. Generate dedicated cover images. Covers are separate from story beat images.
+    const coverResults = await generateCoverImages({
+      story,
+      outputDir,
+      settings,
+      options,
+      effectiveApiKey,
+      effectiveModels,
+      logs
+    });
+    totalCompleted += coverResults.completed;
+    totalScenes += coverResults.total;
+
+    // 2. Generate Scene Images
+    if (options.imageMode && options.imageMode !== "none" && options.imageMode !== "inherit") {
+      const imageProviderName = options.imageMode === "google" ? "Google Imagen" : "MiniMax";
+      pushLog(logs, `Generating scene images with ${imageProviderName}`);
+      const scenes = getUniqueImageScenes(story, targetAspectRatio);
+      if (isPodcastStory(story)) {
+        await restoreSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
+      } else {
+        await removePodcastHostImages(outputDir, logs);
+      }
+      pushLog(logs, `Image API requests: ${scenes.length}; reused across ${story.sections.length} story sections.`);
+      const results = options.imageMode === "google"
+        ? await generateGoogleImages({
+          scenes,
+          outputDir,
+          apiKey: settings.google?.apiKey,
+          baseUrl: settings.google?.baseUrl,
+          model: options.googleImageModel || settings.google?.imageModel,
+          aspectRatio: targetAspectRatio,
+          batchSize: options.batchImageCount || 3,
+          onProgress: (progress) => reportImageProgress(options, logs, progress)
+        })
+        : await generateImages({
+          scenes,
+          outputDir,
+          apiKey: effectiveApiKey,
+          model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
+          aspectRatio: targetAspectRatio,
+          promptOptimizer: true,
+          batchSize: options.batchImageCount || 3,
+          onProgress: (progress) => reportImageProgress(options, logs, progress)
+        });
+      if (isPodcastStory(story)) {
+        await saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
+      }
+      totalCompleted += results.length;
+      totalScenes += scenes.length;
     }
-    pushLog(logs, `Image API requests: ${scenes.length}; reused across ${story.sections.length} story sections.`);
-    const results = options.imageMode === "google"
-      ? await generateGoogleImages({
-        scenes,
-        outputDir,
-        apiKey: settings.google?.apiKey,
-        baseUrl: settings.google?.baseUrl,
-        model: options.googleImageModel || settings.google?.imageModel,
-        batchSize: options.batchImageCount || 3,
-        onProgress: (progress) => reportImageProgress(options, logs, progress)
-      })
-      : await generateImages({
-        scenes,
-        outputDir,
-        apiKey: effectiveApiKey,
-        model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
-        aspectRatio: "16:9",
-        promptOptimizer: true,
-        batchSize: options.batchImageCount || 3,
-        onProgress: (progress) => reportImageProgress(options, logs, progress)
-      });
-    if (isPodcastStory(story)) {
-      await saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
-    }
+
     return {
       status: "completed",
       counts: {
-        completed: results.length,
-        total: scenes.length
+        completed: totalCompleted,
+        total: totalScenes
       }
     };
     });
@@ -285,6 +316,7 @@ async function generateStoryWorkflow(options = {}) {
       musicPath: musicSummary?.musicPath || null,
       musicVolume: Number(options.musicVolume || 0.12),
       imageMode: options.imageMode || "local",
+      imageAspectRatio: targetAspectRatio,
       videoEncoder: options.videoEncoder || "auto",
       logs
     };
@@ -351,11 +383,14 @@ async function generateStoryWorkflow(options = {}) {
       scriptJson: path.join(outputDir, "script.json"),
       scriptMd: path.join(outputDir, "script.md"),
       imagePrompts: path.join(outputDir, "image-prompts.md"),
+      coverPrompts: path.join(outputDir, "cover-prompts.md"),
       subtitles: path.join(outputDir, "subtitles.srt"),
       audio: options.skipAudio ? null : path.join(outputDir, "audio.wav"),
       music: musicSummary ? path.join(outputDir, "music", "background.mp3") : null,
       video: options.skipAudio ? null : path.join(outputDir, "final.mp4"),
       videoPortrait: options.skipAudio ? null : path.join(outputDir, "final-portrait.mp4"),
+      coverYoutube: path.join(outputDir, "images", "cover-youtube.png"),
+      coverVertical: path.join(outputDir, "images", "cover-vertical.png"),
       timelineManifest: options.skipAudio ? null : path.join(outputDir, "timeline-manifest.json"),
       timelineManifestPortrait: options.skipAudio ? null : path.join(outputDir, "timeline-manifest-portrait.json"),
       qualityReport: path.join(outputDir, "quality-report.json"),
@@ -363,6 +398,19 @@ async function generateStoryWorkflow(options = {}) {
       youtubeCopyJson: path.join(outputDir, "youtube-copy.json")
     }
   };
+}
+
+async function generateCoverImages({ story, outputDir, settings, options, effectiveApiKey, effectiveModels, logs }) {
+  return generateCoverImageSet({
+    story,
+    outputDir,
+    settings,
+    provider: resolveCoverProvider(options.coverImageMode, options.imageMode),
+    minimaxApiKey: effectiveApiKey,
+    minimaxImageModel: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
+    googleImageModel: options.googleImageModel || settings.google?.imageModel,
+    logs
+  });
 }
 
 function assignPodcastVoices(readingItems, settings, options) {
@@ -601,8 +649,8 @@ function roundSeconds(value) {
   return Number.isFinite(number) ? Number(number.toFixed(3)) : 0;
 }
 
-function getUniqueImageScenes(story) {
-  if (isPodcastStory(story)) return buildPodcastHostScenes(story);
+function getUniqueImageScenes(story, targetAspectRatio = "16:9") {
+  if (isPodcastStory(story)) return buildPodcastHostScenes(story, targetAspectRatio);
 
   const seen = new Map();
   story.sections.forEach((section, index) => {
@@ -615,7 +663,7 @@ function getUniqueImageScenes(story) {
       if (seen.has(key)) continue;
       const moment = getSectionBeatMoment(story, section, beatIndex);
       const beat = imageBeats[beatIndex] || {};
-      const imagePrompt = buildBeatImagePrompt(story, section, beatIndex);
+      const imagePrompt = buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio);
       seen.set(key, {
         id: buildSceneImageId(baseIndex, variantIndex, beatIndex),
         visual: section.visual,
@@ -639,7 +687,7 @@ function isPodcastStory(story) {
   return story?.template?.id === "podcast-dialogue";
 }
 
-function buildPodcastHostScenes(story) {
+function buildPodcastHostScenes(story, targetAspectRatio = "16:9") {
   const baseStyle = story.storyboardDesign?.visualStyle
     || story.outline?.visualStyle
     || story.template?.visualStyle
@@ -655,7 +703,7 @@ function buildPodcastHostScenes(story) {
       visual: "Female host in a premium podcast studio, professional microphone, warm key light, soft background, eye-level close-up, natural confident expression.",
       moment: "Host A speaks as a clear, warm female presenter.",
       imagePrompt: [
-        "Create one 16:9 photorealistic cinematic podcast video background.",
+        `Create one ${targetAspectRatio} photorealistic cinematic podcast video background.`,
         `Topic: ${topic}.`,
         "Subject: one warm confident female podcast host at a desk microphone.",
         "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
@@ -672,7 +720,7 @@ function buildPodcastHostScenes(story) {
       visual: "Male host in a premium podcast studio, professional microphone, warm key light, soft background, eye-level close-up, calm thoughtful expression.",
       moment: "Host B speaks as a calm, trustworthy male presenter.",
       imagePrompt: [
-        "Create one 16:9 photorealistic cinematic podcast video background.",
+        `Create one ${targetAspectRatio} photorealistic cinematic podcast video background.`,
         `Topic: ${topic}.`,
         "Subject: one calm trustworthy male podcast host at a desk microphone.",
         "Scene: premium modern podcast studio, warm desk lamp, shallow depth of field, clean background, no readable text.",
@@ -759,13 +807,13 @@ function clampInteger(value, min, max) {
   return Math.min(max, Math.max(min, integer));
 }
 
-function buildBeatImagePrompt(story, section, beatIndex) {
+function buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio = "16:9") {
   const moment = getSectionBeatMoment(story, section, beatIndex);
   const visualStyle = story.storyboardDesign?.visualStyle || story.outline?.visualStyle || "photorealistic cinematic documentary still";
   const factual = story.contentMode === "factual-documentary" || story.template?.contentMode === "factual-documentary";
   const podcast = story.template?.id === "podcast-dialogue";
   const parts = [
-    "Create one 16:9 photorealistic cinematic still image for an English shadowing video.",
+    `Create one ${targetAspectRatio} photorealistic cinematic still image for an English shadowing video.`,
     `Video title: ${story.title}.`,
     story.template?.title ? `Video type: ${story.template.title}.` : "",
     `Overall visual style: ${visualStyle}.`,

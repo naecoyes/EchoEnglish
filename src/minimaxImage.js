@@ -139,7 +139,7 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
       const imageUrls = await requestImage({
         apiKey,
         model,
-        prompt: prepareMiniMaxPrompt(scene),
+        prompt: prepareMiniMaxPrompt(scene, aspectRatio),
         aspectRatio,
         promptOptimizer,
         batchSize: 1
@@ -190,7 +190,7 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
       const imageUrls = await requestImage({
         apiKey,
         model,
-        prompt: prepareMiniMaxPrompt(scene),
+        prompt: prepareMiniMaxPrompt(scene, aspectRatio),
         aspectRatio,
         promptOptimizer,
         batchSize
@@ -329,12 +329,12 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
   return imageUrls;
 }
 
-function prepareMiniMaxPrompt(scene) {
+function prepareMiniMaxPrompt(scene, aspectRatio = "16:9") {
   const direct = normalizePrompt(scene.imagePrompt || "");
   if (direct && direct.length <= MAX_PROMPT_CHARS) return direct;
 
   const compact = [
-    "16:9 photorealistic cinematic still image for an English shadowing video.",
+    `${aspectRatio} photorealistic cinematic still image for an English shadowing video.`,
     scene.title ? `Title: ${scene.title}.` : "",
     scene.templateTitle ? `Video type: ${scene.templateTitle}.` : "",
     scene.visualStyle ? `Style: ${scene.visualStyle}.` : "",
@@ -414,6 +414,7 @@ async function deleteBatchTempFiles(imagesDir, sceneId) {
 
 async function removeStaleSceneImages(imagesDir, sceneIds) {
   const allowed = new Set(sceneIds);
+  const currentGroup = imageSceneGroup(sceneIds[0] || "");
   try {
     const entries = await fs.readdir(imagesDir);
     for (const entry of entries) {
@@ -421,11 +422,20 @@ async function removeStaleSceneImages(imagesDir, sceneIds) {
       const sceneId = entry
         .replace(/\.(png|jpe?g|webp)$/i, "")
         .replace(/_batch_\d+$/i, "");
-      if (!allowed.has(sceneId)) {
+      if (!allowed.has(sceneId) && imageSceneGroup(sceneId) === currentGroup) {
         await fs.unlink(path.join(imagesDir, entry)).catch(() => {});
       }
     }
   } catch {}
+}
+
+function imageSceneGroup(sceneId) {
+  const id = String(sceneId || "");
+  if (id.startsWith("cover-youtube")) return "cover-youtube";
+  if (id.startsWith("cover-vertical")) return "cover-vertical";
+  if (id.startsWith("cover")) return "cover";
+  if (id.startsWith("podcast-host")) return "podcast";
+  return "scene";
 }
 
 module.exports = {

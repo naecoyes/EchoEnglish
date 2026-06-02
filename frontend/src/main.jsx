@@ -45,6 +45,9 @@ const OUTPUT_LABELS = {
   subtitles: "Subtitles",
   audio: "Narration",
   music: "Background Music",
+  coverYoutube: "YouTube Cover",
+  coverVertical: "Vertical Cover",
+  coverPrompts: "Cover Prompts",
   imagePrompts: "Scene Prompts",
   scriptJson: "Structured Data",
   jobState: "Job State",
@@ -264,9 +267,10 @@ function App() {
         setStatus("queued");
         setDraftStartedAt(Date.now());
         setLogs([
-          "Step 1/3: Searching topic context with Tavily.",
-          "Step 2/3: Generating full review draft with the configured LLM.",
-          "Step 3/3: Waiting for draft review."
+          "Draft step 1/4: Searching topic context with Tavily.",
+          "Draft step 2/4: Building outline and source notes.",
+          "Draft step 3/4: Generating full review draft with the configured LLM.",
+          "Draft step 4/4: Running quality gate before review."
         ]);
         const result = await fetchJson("/api/story-draft", {
           method: "POST",
@@ -279,9 +283,10 @@ function App() {
         setStatus("idle");
         setDraftStartedAt(null);
         setLogs([
-          "Step 1/3 complete: Tavily search context ready.",
-          "Step 2/3 complete: Review draft generated.",
-          `Step 3/3 active: Draft autosaved${result.autosaved?.draftJson ? ` to ${result.autosaved.draftJson}` : ""}. Review, revise, or confirm generation.`
+          "Draft step 1/4 complete: Tavily search context ready.",
+          "Draft step 2/4 complete: Outline and source notes ready.",
+          "Draft step 3/4 complete: Review draft generated.",
+          `Draft step 4/4 complete: Quality gate passed. Draft autosaved${result.autosaved?.draftJson ? ` to ${result.autosaved.draftJson}` : ""}. Review, revise, or confirm generation.`
         ]);
       } catch (error) {
         setStatus("failed");
@@ -544,12 +549,16 @@ function getProviderReady(summary, provider) {
 }
 
 function GlassNavigation({ route, navigate }) {
+  const activeIndex = NAV_ITEMS.findIndex((item) => route === item.path);
+  const safeIndex = activeIndex >= 0 ? activeIndex : 0;
+
   return (
     <nav className="glass-nav" aria-label="Main navigation">
       <div className="nav-brand">
         <span>SV</span>
       </div>
-      <div className="nav-items">
+      <div className="nav-items" style={{ "--active-index": safeIndex }}>
+        <div className="nav-active-indicator" aria-hidden="true" />
         {NAV_ITEMS.map((item) => {
           const active = route === item.path;
           const Icon = item.icon;
@@ -777,9 +786,12 @@ function PreviewPage({ output, onRepairDraftCreated }) {
   const [qualityAnalysis, setQualityAnalysis] = useState(null);
   const [qualityState, setQualityState] = useState("");
   const [repairState, setRepairState] = useState("");
+  const [coverState, setCoverState] = useState("");
+  const [coverOutputs, setCoverOutputs] = useState({});
   const [stats, setStats] = useState(null);
   const [youtubeCopy, setYoutubeCopy] = useState(null);
   const [showYoutubeCopy, setShowYoutubeCopy] = useState(false);
+  const [isPlayingPortrait, setIsPlayingPortrait] = useState(false);
 
   useEffect(() => {
     setVideoVersion(0);
@@ -787,6 +799,12 @@ function PreviewPage({ output, onRepairDraftCreated }) {
     setQualityAnalysis(null);
     setQualityState("");
     setRepairState("");
+    setCoverState("");
+    setCoverOutputs({
+      coverYoutube: output?.outputs?.coverYoutube || null,
+      coverVertical: output?.outputs?.coverVertical || null,
+      coverPrompts: output?.outputs?.coverPrompts || null
+    });
     setStats(null);
     setYoutubeCopy(null);
     setShowYoutubeCopy(false);
@@ -861,32 +879,31 @@ function PreviewPage({ output, onRepairDraftCreated }) {
     }
   }
 
+  async function handleRegenerateCover() {
+    if (!slug) return;
+    setCoverState("Generating YouTube and vertical cover images with the configured cover provider.");
+    try {
+      const result = await fetchJson(`/api/outputs/${encodeURIComponent(slug)}/regenerate-cover`, { method: "POST" });
+      setCoverState(`Generated covers with ${result.provider}.`);
+      setCoverOutputs({
+        coverYoutube: result.outputs?.coverYoutube || result.coverYoutube || null,
+        coverVertical: result.outputs?.coverVertical || result.coverVertical || null,
+        coverPrompts: result.outputs?.coverPrompts || result.coverPrompts || null
+      });
+    } catch (error) {
+      setCoverState(error.message);
+    }
+  }
+
+  const activeCoverYoutube = coverOutputs.coverYoutube || output?.outputs?.coverYoutube;
+  const activeCoverVertical = coverOutputs.coverVertical || output?.outputs?.coverVertical;
+
   return (
     <section className="glass-card content-panel preview-panel">
       <p className="section-kicker">Preview</p>
       <div className="panel-title-row">
-        <h2>{output?.title || "No video selected"}</h2>
-        {output?.outputs?.video && (
-          <div className="title-actions">
-            <button className="ghost-action" type="button" onClick={handleRerenderUi}>
-              Re-render Video UI
-            </button>
-            <button className="ghost-action" type="button" onClick={handleAnalyzeQuality}>
-              Analyze Quality
-            </button>
-            <button className="ghost-action" type="button" onClick={handleCreateRepairDraft}>
-              Create Repair Draft
-            </button>
-            <a className="ghost-action download-btn" href={output.outputs.video} download={`${output.title || "video"}.mp4`}>
-              Download
-            </a>
-            {output.outputs.videoPortrait && (
-              <a className="ghost-action download-btn" href={output.outputs.videoPortrait} download={`${output.title || "video"}-portrait.mp4`}>
-                Portrait
-              </a>
-            )}
-          </div>
-        )}
+        <h2 title={output?.title || "No video selected"} className="truncate-title">{output?.title || "No video selected"}</h2>
+
       </div>
       {output?.outputs?.video && (
         <div className="preview-stats">
@@ -895,26 +912,64 @@ function PreviewPage({ output, onRepairDraftCreated }) {
           <span>Vocabulary: {stats?.vocabularyCount || 0}</span>
           <span>Images: {stats?.imageCount || 0}</span>
           <span>Quality: {stats?.scriptQualityStatus || "unknown"}</span>
+          {rerenderState && <span className="stat-message">{rerenderState}</span>}
+          {qualityState && <span className="stat-message">{qualityState}</span>}
+          {repairState && <span className="stat-message">{repairState}</span>}
+          {coverState && <span className="stat-message">{coverState}</span>}
         </div>
       )}
-      {rerenderState && <p className="preview-message">{rerenderState}</p>}
-      {qualityState && <p className="preview-message">{qualityState}</p>}
-      {repairState && <p className="preview-message">{repairState}</p>}
       {qualityAnalysis && <QualityAnalysisPanel analysis={qualityAnalysis} />}
       {output?.outputs?.video ? (
-        <VideoPlayer src={output.outputs.video} cacheKey={videoVersion} title={output.title} />
+        <div className="video-player-container">
+          <VideoPlayer 
+            src={isPlayingPortrait && output.outputs.videoPortrait ? output.outputs.videoPortrait : output.outputs.video} 
+            cacheKey={videoVersion} 
+            title={output.title} 
+          />
+          <div className="video-toolbar">
+            <div className="toolbar-group">
+              <button className="ghost-action" type="button" onClick={() => setIsPlayingPortrait(!isPlayingPortrait)}>
+                {isPlayingPortrait ? "Play Landscape" : "Play Portrait"}
+              </button>
+              {output.outputs.videoPortrait && (
+                <a className="ghost-action download-btn" href={output.outputs.videoPortrait} download={`${output.title || "video"}-portrait.mp4`}>
+                  DL Portrait
+                </a>
+              )}
+              <a className="ghost-action download-btn" href={output.outputs.video} download={`${output.title || "video"}.mp4`}>
+                DL Landscape
+              </a>
+              {activeCoverYoutube && (
+                <a className="ghost-action download-btn" href={activeCoverYoutube} download={`${output.title || "video"}-youtube-cover.${fileExtension(activeCoverYoutube)}`}>
+                  DL YouTube Cover
+                </a>
+              )}
+              {activeCoverVertical && (
+                <a className="ghost-action download-btn" href={activeCoverVertical} download={`${output.title || "video"}-vertical-cover.${fileExtension(activeCoverVertical)}`}>
+                  DL Vertical Cover
+                </a>
+              )}
+            </div>
+            <div className="toolbar-group">
+              <button className="ghost-action" type="button" onClick={handleRerenderUi}>Re-render UI</button>
+              <button className="ghost-action" type="button" onClick={handleRegenerateCover}>Generate Covers</button>
+              <button className="ghost-action" type="button" onClick={handleAnalyzeQuality}>Analyze Quality</button>
+              <button className="ghost-action" type="button" onClick={handleCreateRepairDraft}>Create Repair Draft</button>
+            </div>
+            <div className="toolbar-group right">
+              {youtubeCopy && (
+                <button className="ghost-action" type="button" onClick={() => setShowYoutubeCopy(!showYoutubeCopy)}>
+                  {showYoutubeCopy ? "Hide YouTube Copy" : "Show YouTube Copy"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       ) : (
         <EmptyState title="Select or generate a video" text="Open a recent output or generate a new story to preview final.mp4 here." />
       )}
-      {youtubeCopy && (
+      {youtubeCopy && showYoutubeCopy && (
         <div className="youtube-copy-section">
-          <button
-            className="ghost-action youtube-copy-toggle"
-            type="button"
-            onClick={() => setShowYoutubeCopy(!showYoutubeCopy)}
-          >
-            {showYoutubeCopy ? "Hide" : "Show"} YouTube Copy
-          </button>
           {showYoutubeCopy && (
             <div className="youtube-copy-content">
               <div className="youtube-copy-field">
@@ -1338,6 +1393,7 @@ function SettingsPage({ onSaved }) {
     media: {
       ttsProvider: "minimax",
       imageProvider: "minimax",
+      coverImageProvider: "minimax",
       videoEncoder: "auto",
       videoOrientation: "landscape"
     },
@@ -1388,6 +1444,7 @@ function SettingsPage({ onSaved }) {
       media: {
         ttsProvider: next.media?.ttsProvider || "minimax",
         imageProvider: next.media?.imageProvider || "minimax",
+        coverImageProvider: next.media?.coverImageProvider || "minimax",
         videoEncoder: next.media?.videoEncoder || "auto",
         videoOrientation: next.media?.videoOrientation || "landscape"
       },
@@ -1588,11 +1645,11 @@ function SettingsPage({ onSaved }) {
   ];
   const showMiniMax = settingsType === "music"
     || (settingsType === "tts" && form.media.ttsProvider === "minimax")
-    || (settingsType === "image" && form.media.imageProvider === "minimax");
+    || (settingsType === "image" && (form.media.imageProvider === "minimax" || resolveCoverProvider(form.media.coverImageProvider, form.media.imageProvider) === "minimax"));
   const showXiaomi = (settingsType === "text" && form.provider === "xiaomi")
     || (settingsType === "tts" && form.media.ttsProvider === "xiaomi");
   const showGoogle = (settingsType === "tts" && form.media.ttsProvider === "google")
-    || (settingsType === "image" && form.media.imageProvider === "google");
+    || (settingsType === "image" && (form.media.imageProvider === "google" || resolveCoverProvider(form.media.coverImageProvider, form.media.imageProvider) === "google"));
   const showPlanning = settingsType === "text" || settingsType === "search";
 
   return (
@@ -1817,7 +1874,7 @@ function SettingsPage({ onSaved }) {
             <span>
               {settingsType === "text" && `Script engine: ${form.provider === "xiaomi" ? "Xiaomi MiMo" : "Fallback LLM"}.`}
               {settingsType === "tts" && `Voice engine: ${form.media.ttsProvider}.`}
-              {settingsType === "image" && `Scene image engine: ${form.media.imageProvider}.`}
+              {settingsType === "image" && `Scene image engine: ${form.media.imageProvider}. Cover engine: ${resolveCoverProvider(form.media.coverImageProvider, form.media.imageProvider)}.`}
               {settingsType === "video" && `MP4 encoder: ${formatVideoEncoder(form.media.videoEncoder)}. Orientation: ${form.media.videoOrientation === "portrait" ? "Portrait (9:16)" : "Landscape (16:9)"}.`}
               {settingsType === "music" && "Background music currently uses MiniMax."}
               {settingsType === "search" && "Search grounding currently uses Tavily."}
@@ -1940,10 +1997,19 @@ function SettingsPage({ onSaved }) {
             {settingsType === "image" && (
               <>
                 <label>
-                  Image Provider
+                  Image Provider (Scenes)
                   <select value={form.media.imageProvider} onChange={(event) => setForm({ ...form, media: { ...form.media, imageProvider: event.target.value } })}>
                     <option value="minimax">MiniMax Image</option>
                     <option value="google">Google Imagen</option>
+                  </select>
+                </label>
+                <label>
+                  Cover Image Provider (Poster)
+                  <select value={form.media.coverImageProvider} onChange={(event) => setForm({ ...form, media: { ...form.media, coverImageProvider: event.target.value } })}>
+                    <option value="minimax">MiniMax Image</option>
+                    <option value="google">Google Imagen</option>
+                    <option value="inherit">Inherit from Scenes</option>
+                    <option value="none">Disabled</option>
                   </select>
                 </label>
                 {form.media.imageProvider === "minimax" && (
@@ -2108,11 +2174,12 @@ function getDraftGenerationProgress({ status = "idle", logs = [], elapsedSeconds
   if (text.includes("search context ready")) {
     return { percent: 68, label: "LLM writing full draft" };
   }
-  if (text.includes("generating full review draft") || text.includes("configured llm")) {
-    const animated = Math.min(92, 24 + Math.floor(elapsedSeconds * 0.9));
+  if (status === "queued" || text.includes("generating full review draft") || text.includes("configured llm")) {
+    const animated = Math.min(96, 12 + Math.floor(elapsedSeconds * 0.85));
     if (animated >= 82) return { percent: animated, label: "Quality gate checking structure" };
-    if (animated >= 42) return { percent: animated, label: "LLM writing scenes and translations" };
-    return { percent: animated, label: "Collecting search context" };
+    if (animated >= 48) return { percent: animated, label: "LLM writing scenes and translations" };
+    if (animated >= 28) return { percent: animated, label: "Building outline from search context" };
+    return { percent: animated, label: "Searching topic context" };
   }
   if (text.includes("searching topic")) {
     return { percent: Math.min(32, 12 + Math.floor(elapsedSeconds * 1.2)), label: "Searching topic context" };
@@ -2125,9 +2192,10 @@ function getDraftGenerationStages({ status = "idle", logs = [], progress = 0 }) 
   const text = (logs || []).join("\n").toLowerCase();
   const draftReady = text.includes("review draft generated") || text.includes("draft autosaved");
   return [
-    makeStep("draft-search", "Tavily Search", "Find factual context and source hints.", draftStageState({ failed, active: progress < 35, complete: progress >= 35 || draftReady || text.includes("search context ready") })),
-    makeStep("draft-llm", "LLM Draft", "Write scenes, translations, and vocabulary.", draftStageState({ failed, active: progress >= 35 && progress < 86, complete: progress >= 86 || draftReady })),
-    makeStep("draft-quality", "Quality Gate", "Check repetition, missing Chinese, and vocabulary.", draftStageState({ failed, active: progress >= 86 && !draftReady, complete: draftReady }))
+    makeStep("draft-search", "Tavily Search", "Find factual context and source hints.", draftStageState({ failed, active: progress < 28, complete: progress >= 28 || draftReady || text.includes("search context ready") })),
+    makeStep("draft-outline", "Outline", "Plan scenes and source notes.", draftStageState({ failed, active: progress >= 28 && progress < 48, complete: progress >= 48 || draftReady || text.includes("outline and source notes ready") })),
+    makeStep("draft-llm", "LLM Draft", "Write scenes, translations, and vocabulary.", draftStageState({ failed, active: progress >= 48 && progress < 86, complete: progress >= 86 || draftReady })),
+    makeStep("draft-quality", "Quality Gate", "Check repetition, Chinese, vocabulary, and timing.", draftStageState({ failed, active: progress >= 86 && !draftReady, complete: draftReady || text.includes("quality gate passed") }))
   ];
 }
 
@@ -2157,7 +2225,9 @@ function getPipelineSteps({ logs = [], status = "idle", hasDraft = false, mode =
   if (mode === "generate" && !text.includes("audio") && !text.includes("image") && !text.includes("music") && !text.includes("mp4")) {
     return [
       makeStep("search", "Tavily Search", "Collect topic context and factual sources.", stepState({ failed, active: status === "queued" && text.includes("search"), complete: hasDraft || text.includes("search context ready") })),
-      makeStep("draft", "LLM Draft", "Write the full 15-minute review draft.", stepState({ failed, active: status === "queued" && text.includes("draft"), complete: hasDraft || text.includes("draft generated") })),
+      makeStep("outline", "Outline", "Plan scene beats before writing.", stepState({ failed, active: status === "queued" && text.includes("outline"), complete: hasDraft || text.includes("outline and source notes ready") })),
+      makeStep("draft", "LLM Draft", "Write the full review draft.", stepState({ failed, active: status === "queued" && text.includes("draft"), complete: hasDraft || text.includes("draft generated") })),
+      makeStep("quality", "Quality Gate", "Block repeated or incomplete drafts.", stepState({ failed, active: status === "queued" && text.includes("quality"), complete: hasDraft || text.includes("quality gate passed") })),
       makeStep("review", "Draft Review", "Revise or confirm before video rendering.", stepState({ failed, active: hasDraft && status !== "queued", complete: text.includes("confirmed") }))
     ];
   }
@@ -2230,6 +2300,17 @@ function formatElapsed(seconds) {
 
 function fileName(url) {
   return decodeURIComponent(String(url).split("/").pop() || url);
+}
+
+function fileExtension(url) {
+  const name = fileName(url);
+  const match = name.match(/\.([a-z0-9]+)(?:\?|$)/i);
+  return match ? match[1] : "png";
+}
+
+function resolveCoverProvider(coverProvider, imageProvider) {
+  if (!coverProvider || coverProvider === "inherit") return imageProvider || "minimax";
+  return coverProvider;
 }
 
 function formatSavedAt(value) {

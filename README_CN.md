@@ -53,17 +53,7 @@ npm run build
 
 ### 配置
 
-1. 复制设置文件：
-```bash
-cp settings.example.json settings.local.json
-```
-
-2. 编辑 `settings.local.json`，配置以下API密钥：
-   - **LLM API** - 用于生成视频脚本（推荐：DashScope/Qwen或小米MiMo）
-   - **TTS API** - 用于生成配音（推荐：MiniMax或小米MiMo TTS）
-   - **图片API** - 用于生成场景图片（推荐：MiniMax image-01）
-   - **音乐API** - 用于生成背景音乐（推荐：MiniMax music-2.6）
-   - **搜索API** - 用于获取事实内容（推荐：Tavily）
+在 Settings 页面中配置 API 密钥。它们将保存到 `settings.local.json`（在 Docker 中为 `data/settings.local.json`），并且可以在容器重启后持久化。无需手动创建或复制配置文件。
 
 ### 运行
 
@@ -137,32 +127,117 @@ EchoEnglish支持多种视频模板：
 3. 点击"Continue Generation"
 4. 已完成的TTS、图片和音乐会被复用
 
-## 输出文件
+## 输出文件夹结构
 
-每个生成的视频包含以下文件：
+每个生成的视频都包含以下完整的文件结构：
 
-```
+```text
 outputs/{slug}/
-  draft.json              # 视频草稿
-  draft.md                # 草稿Markdown版本
-  script.json             # 完整视频脚本
-  script.md               # 脚本Markdown版本
-  subtitles.srt           # 字幕文件
-  audio.wav               # 合并后的音频
-  image-prompts.md        # 图片生成提示词
-  youtube-copy.md         # YouTube发布文案
-  youtube-copy.json       # YouTube文案JSON格式
-  audio-manifest.json     # 音频缓存状态
-  image-manifest.json     # 图片生成记录
-  music-manifest.json     # 音乐生成记录
-  quality-report.json     # 质量检查报告
-  images/                 # 场景图片文件夹
-  music/                  # 背景音乐文件夹
-  slides/                 # 幻灯片文件夹
-  final.mp4               # 横屏视频(1920x1080)
-  final-portrait.mp4      # 竖屏视频(1080x1920)
-  job-state.json          # 任务状态记录
+  draft.json                        # 视频草稿 (LLM 生成)
+  draft.md                          # 草稿 Markdown 版本
+  script.json                       # 完整视频脚本 (含时间轴与词汇)
+  script.md                         # 脚本 Markdown 版本
+  subtitles.srt                     # 字幕文件
+  audio.wav                         # 合并后的配音音频
+  image-prompts.md                  # 图片生成提示词
+  youtube-copy.md                   # YouTube 发布文案 (中英标题、简介、时间戳章节等)
+  youtube-copy.json                 # YouTube 文案 JSON 格式
+  audio-manifest.json               # 音频缓存状态清单
+  image-manifest.json               # 图片生成记录清单
+  music-manifest.json               # 背景音乐生成清单
+  timeline-manifest.json            # 横屏视频渲染时间轴清单
+  timeline-manifest-portrait.json   # 竖屏视频渲染时间轴清单
+  quality-report.json               # 质量检查报告 (包含时长对齐、图片数等警告)
+  images/                           # 场景及封面图片文件夹
+  music/                            # 背景音乐生成音轨文件夹
+  slides/                           # 横屏幻灯片帧 PNG 文件夹
+  slides-portrait/                  # 竖屏幻灯片帧 PNG 文件夹
+  final.mp4                         # 最终横屏视频 (1920x1080, 16:9)
+  final-portrait.mp4                # 最终竖屏视频 (1080x1920, 9:16)
+  job-state.json                    # 任务状态记录 (用于断点续传)
 ```
+
+## 竖屏视频模式 (9:16)
+
+每次视频生成均会自动同时输出横屏和竖屏视频：
+
+- `final.mp4` — 1920×1080 (16:9 横屏)
+- `final-portrait.mp4` — 1080×1920 (9:16 竖屏)
+
+竖屏模式下会自动复用相同的场景图片，通过对图片进行居中裁剪以填满竖屏画布。合成进度会针对两种尺寸独立追踪（横屏 60–78%，竖屏 78–96%）。
+
+## 封面图图层
+
+封面图的生成独立于故事场景图片的生成：
+
+- `cover-prompts.md` 存储专用的封面提示词。
+- `images/cover-youtube.png` 是已渲染好的 16:9 YouTube 风格封面，包含 EchoEnglish 标志、故事标题、简介、难度和 CTA（行为召唤）文本。
+- `images/cover-vertical.png` 是已渲染好的 9:16 抖音/TikTok/Reels 风格封面，并适配了垂直布局。
+- `images/cover-youtube-bg.*` 和 `images/cover-vertical-bg.*` 为当生成新封面时，由图像模型产出的原始背景图。
+- 场景图提示词保留在 `image-prompts.md` 中，并独立于封面进行生成。
+
+封面图图层独立于 MiniMax 和 Google Imagen 提供商。在 Settings -> Image 中，您可以选择故事场景的图片提供商，以及一个独立的封面图片提供商（“Inherit from Scenes” 将与故事场景图片提供商保持一致，您也可以单独禁用封面图生成）。
+
+封面图提示词是根据主题、标题、概要、模板以及故事的视觉风格自动生成的，且已进行过提示词工程，避免生成包含 `Your Text`、破损字母或随机文字的背景。EchoEnglish 采用本地渲染器在生成的摄影背景上叠加文本，文字包含 `ECHOENGLISH`、`今天的故事`、视频标题、简短描述、美国年级难度估算值以及 `Listen & Shadow`。
+
+在预览页（Preview）中包含：
+- **Generate Covers**：仅重新生成封面背景图与合成图。
+- **DL YouTube Cover**：下载横屏封面图。
+- **DL Vertical Cover**：下载竖屏封面图。
+
+## 视频 UI 渲染
+
+MP4 视频的画面 UI 是由本地根据已有素材和数据直接渲染生成的：
+
+- **封面/首页帧**：全屏摄影背景、影院级暗色遮罩、居中故事标题、大播放按钮、摘要和难度标识。
+- **字幕**：英文为主字幕并居中显示；中文为副字幕。字号和行高经过精心优化（英文 1.45 倍行高，中文 1.55 倍行高），并带有个性化的段落间距。文字下方带有半透明深色高品质面板（`#000000`，0.72 不透明度，圆角设计）并附带 drop-shadow 阴影以确保在任何复杂背景下都拥有极致的清晰度。
+- **关键词高亮**：对当前句中出现的重点英文单词，自动计算文字精确宽度并叠加高对比度的黄色背景（`#facc15`，圆角）和投影；对应的中文翻译也会在字幕中以高亮显示。
+- **单词卡**：当当前字幕句中包含重点词汇时，会在屏幕上方角落（竖屏时为顶部居中）自动弹出扁平、深色的单词卡片（`#0f172a`，0.85 不透明度，圆角），展示该英文单词及中文翻译（去除了音标显示以保持界面视觉干净纯粹）。
+- **播客对话模式**：左右两侧展示两位固定主持人的头像，以及角色对应的配音和对话字幕。
+
+您可以在 Preview 页使用 **Re-render UI** 重新渲染，它会在不消耗 LLM、TTS、图片或音乐 API 额度的情况下，极速重建 `slides/`、`slides-portrait/`、`final.mp4` 和 `final-portrait.mp4`。
+
+## 硬件视频编码
+
+在 Settings → Video 中，您可以选择：
+
+| 编码器 | 适用场景 |
+| --- | --- |
+| Auto | 推荐的默认值。自动检测并启用本地可用的硬件加速编码器。 |
+| Apple VideoToolbox | macOS 硬件 H.264 编码。 |
+| NVIDIA NVENC | NVIDIA GPU 硬件 H.264 编码。 |
+| Intel Quick Sync | Intel 硬件 H.264 编码。 |
+| CPU libx264 | 稳定可靠的 CPU 软件编码方案。 |
+
+您可以使用以下命令检查本地 FFmpeg 支持的编码器：
+
+```bash
+ffmpeg -hide_banner -encoders | grep -E 'h264_videotoolbox|h264_nvenc|h264_qsv|libx264'
+```
+
+## 宿主 FFmpeg 网关
+
+针对 Mac 上的 Docker 部署环境，提供了一个通用的 Host FFmpeg Worker，允许所有 Docker 容器直接调用 Apple VideoToolbox：
+
+```text
+Docker 容器应用
+  -> http://host.docker.internal:4869/run-ffmpeg
+  -> Mac 宿主机 FFmpeg Worker (tools/host-ffmpeg-worker.js)
+  -> /opt/homebrew/bin/ffmpeg h264_videotoolbox
+  -> 将渲染好的视频写回共享挂载卷
+```
+
+在 Mac 宿主机上启动 Worker：
+
+```bash
+HOST_FFMPEG_WORKER_HOST=0.0.0.0 \
+HOST_FFMPEG_TOKEN=change-me \
+HOST_FFMPEG_BIN=/opt/homebrew/bin/ffmpeg \
+HOST_FFMPEG_PATH_MAPS="/app/outputs=$(pwd)/outputs" \
+node tools/host-ffmpeg-worker.js
+```
+
+其他的 Docker 项目也可以通过在 `HOST_FFMPEG_PATH_MAPS` 中添加其路径映射来复用此 FFmpeg 加速服务。
 
 ## 技术栈
 

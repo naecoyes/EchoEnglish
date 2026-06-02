@@ -14,7 +14,8 @@ RUN npm ci --prefer-offline && npm run build
 FROM node:22-alpine AS runner
 
 # System deps: ffmpeg + ffprobe (video composition & audio probing)
-RUN apk add --no-cache ffmpeg
+# Font deps: fontconfig, ttf-dejavu, font-noto-cjk (for rendering SVG text in sharp)
+RUN apk add --no-cache ffmpeg fontconfig ttf-dejavu font-noto font-noto-cjk
 
 WORKDIR /app
 

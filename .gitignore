@@ -10,3 +10,5 @@ screenshots/
 !docs/screenshots/**
 TODO.md
 *.log
+test_minimax.js
+tmp/

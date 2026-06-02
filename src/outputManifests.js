@@ -71,6 +71,12 @@ async function initImageManifest(outputDir, scenes) {
   const file = imageManifestPath(outputDir);
   const existing = await readJson(file, {});
   const previous = new Map((existing.items || []).map((item) => [item.sceneId, item]));
+  const currentGroup = imageSceneGroup(scenes[0]?.id || "");
+  const currentIds = new Set(scenes.map((scene) => scene.id));
+  const preservedItems = (existing.items || []).filter((item) => {
+    if (currentIds.has(item.sceneId)) return false;
+    return imageSceneGroup(item.sceneId) !== currentGroup;
+  });
   const items = [];
   for (const [index, scene] of scenes.entries()) {
     const prior = previous.get(scene.id) || {};
@@ -106,12 +112,21 @@ async function initImageManifest(outputDir, scenes) {
   }
   const manifest = {
     updatedAt: new Date().toISOString(),
-    total: items.length,
-    completed: items.filter((item) => item.status === "completed").length,
-    items
+    total: preservedItems.length + items.length,
+    completed: [...preservedItems, ...items].filter((item) => item.status === "completed").length,
+    items: [...preservedItems, ...items]
   };
   await writeJson(file, manifest);
   return manifest;
+}
+
+function imageSceneGroup(sceneId) {
+  const id = String(sceneId || "");
+  if (id.startsWith("cover-youtube")) return "cover-youtube";
+  if (id.startsWith("cover-vertical")) return "cover-vertical";
+  if (id.startsWith("cover")) return "cover";
+  if (id.startsWith("podcast-host")) return "podcast";
+  return "scene";
 }
 
 function hashPrompt(prompt) {

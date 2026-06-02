@@ -5,6 +5,7 @@ const { promisify } = require("node:util");
 const { createRequire } = require("node:module");
 const { ensureDir, pathExists } = require("./utils");
 const { inspectImage } = require("./imageQuality");
+const { renderCoverOverlayContent } = require("./coverRenderer");
 
 const execFileAsync = promisify(execFile);
 const { runFfmpeg } = require("./ffmpegGateway");
@@ -14,14 +15,14 @@ function getLayout(orientation) {
   const isPortrait = orientation === "portrait";
   const W = isPortrait ? 1080 : 1920;
   const H = isPortrait ? 1920 : 1080;
-  const CAPTION_Y = Math.round(H * (isPortrait ? 0.73 : 0.70));
-  const CAPTION_H = isPortrait ? 320 : 250;
-  const CAPTION_W = Math.round(W * (isPortrait ? 0.88 : 0.84));
+  const CAPTION_Y = Math.round(H * (isPortrait ? 0.72 : 0.65));
+  const CAPTION_H = isPortrait ? 420 : 280;
+  const CAPTION_W = Math.round(W * (isPortrait ? 0.94 : 0.88));
   const CAPTION_X = Math.round((W - CAPTION_W) / 2);
   return { isPortrait, W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X };
 }
 
-async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, logs = [], videoEncoder = "auto", orientation = "landscape", onProgress = null }) {
+async function composeStoryVideo({ story, readingItems, outputDir, audioPath, musicPath = null, musicVolume = 0.12, imageAspectRatio = "16:9", logs = [], videoEncoder = "auto", orientation = "landscape", onProgress = null }) {
   await assertCommand("ffmpeg", ["-version"]);
   const layout = getLayout(orientation);
   const slidesDir = path.join(outputDir, orientation === "portrait" ? "slides-portrait" : "slides");
@@ -45,12 +46,15 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
       await onProgress({ orientation, completed: index + 1, total: totalFrames, phase: "frames" });
     }
 
-    const sceneImageId = resolveFrameSceneImageId(story, frame);
-    const existingImage = await findExistingSceneImage(outputDir, story, frame);
+    const frameForImage = frame.kind === "cover"
+      ? { ...frame, coverImageId: orientation === "portrait" ? "cover-vertical" : "cover-youtube" }
+      : frame;
+    const sceneImageId = resolveFrameSceneImageId(story, frameForImage);
+    const existingImage = await findExistingSceneImage(outputDir, story, frameForImage);
     frame.sceneImageId = sceneImageId;
     frame.imagePath = existingImage || null;
     const imageDataUri = existingImage ? await imageToDataUri(existingImage) : null;
-    const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri, layout });
+    const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri, layout, imageAspectRatio });
     await sharp(Buffer.from(svg)).png().toFile(path.join(slidesDir, `${frame.id}.png`));
   }
 
@@ -227,7 +231,7 @@ function encoderArgs(id) {
       id,
       label: "Apple VideoToolbox (h264_videotoolbox)",
       requires: "h264_videotoolbox",
-      args: ["-c:v", "h264_videotoolbox", "-b:v", "6000k"]
+      args: ["-c:v", "h264_videotoolbox", "-b:v", "16000k"] // High bitrate for maximum quality
     };
   }
   if (id === "nvidia-nvenc") {
@@ -235,7 +239,7 @@ function encoderArgs(id) {
       id,
       label: "NVIDIA NVENC (h264_nvenc)",
       requires: "h264_nvenc",
-      args: ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "6000k"]
+      args: ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "18", "-b:v", "16000k"] // High quality preset
     };
   }
   if (id === "intel-qsv") {
@@ -243,14 +247,14 @@ function encoderArgs(id) {
       id,
       label: "Intel Quick Sync (h264_qsv)",
       requires: "h264_qsv",
-      args: ["-c:v", "h264_qsv", "-b:v", "6000k"]
+      args: ["-c:v", "h264_qsv", "-global_quality", "18", "-b:v", "16000k"]
     };
   }
   return {
     id: "cpu-libx264",
     label: "CPU libx264",
     requires: "libx264",
-    args: ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    args: ["-c:v", "libx264", "-preset", "slow", "-crf", "16"] // Visually lossless, best quality
   };
 }
 
@@ -417,6 +421,19 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
     if (podcastImage) return podcastImage;
   }
 
+  const imagesDir = path.join(outputDir, "images");
+  if (typeof frameOrIndex === "object" && frameOrIndex.kind === "cover") {
+    const preferredCoverId = frameOrIndex.coverImageId || "cover-youtube";
+    for (const coverId of [preferredCoverId, "cover-youtube", "cover-vertical", "cover"]) {
+      const coverImages = await findBatchImages(imagesDir, coverId);
+      if (coverImages.length > 0) return coverImages[0];
+      for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+        const direct = path.join(imagesDir, `${coverId}${ext}`);
+        if (await pathExists(direct)) return direct;
+      }
+    }
+  }
+
   const index = typeof frameOrIndex === "object" ? frameOrIndex.sectionIndex : frameOrIndex;
   const frameSentenceIndex = typeof frameOrIndex === "object" ? frameOrIndex.sentenceIndex : sentenceIndex;
   const section = story.sections[index] || {};
@@ -424,7 +441,6 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
   const variantIndex = Number.isInteger(section.imageVariantIndex) ? section.imageVariantIndex : 0;
   const variantSuffix = ["a", "b", "c"][variantIndex] || String(variantIndex + 1);
   const sceneBase = `scene-${String(baseIndex + 1).padStart(3, "0")}-${variantSuffix}`;
-  const imagesDir = path.join(outputDir, "images");
 
   const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
   const beatSceneId = `${sceneBase}-${String(beatIndex + 1).padStart(2, "0")}`;
@@ -456,6 +472,10 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
 }
 
 function resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex = 0) {
+  if (typeof frameOrIndex === "object" && frameOrIndex.kind === "cover") {
+    return frameOrIndex.coverImageId || "cover-youtube";
+  }
+
   if (isPodcastStory(story)) {
     const speaker = typeof frameOrIndex === "object" ? frameOrIndex.speaker : null;
     return speaker === "host-b" ? "podcast-host-b" : "podcast-host-a";
@@ -541,17 +561,61 @@ async function findImageBySceneId(outputDir, sceneId) {
   return null;
 }
 
-function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout }) {
+function isFinalCoverImage(filePath) {
+  const filename = path.basename(String(filePath || "")).toLowerCase();
+  return filename === "cover-youtube.png" || filename === "cover-vertical.png";
+}
+
+function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout, imageAspectRatio = "16:9" }) {
   const { W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X } = layout;
   const palette = getPalette(frameIndex);
   const pad = Math.round(W * 0.04);
-  const imageLayer = imageDataUri
-    ? `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`
-    : renderFallbackImage(frame, palette, layout);
+  const usingFinalCoverImage = frame.kind === "cover" && isFinalCoverImage(frame.imagePath);
+  const needsCoverOverlay = frame.kind === "cover" && !isFinalCoverImage(frame.imagePath);
+  let imageLayer = "";
+  if (imageDataUri) {
+    if (usingFinalCoverImage) {
+      imageLayer = `<image href="${imageDataUri}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`;
+    } else if (layout.isPortrait) {
+      const bgW = Math.round(layout.W * 1.1);
+      const bgH = Math.round(layout.H * 1.1);
+      const bgX = Math.round((layout.W - bgW) / 2);
+      const bgY = Math.round((layout.H - bgH) / 2);
+
+      if (frame.kind === "cover" || imageAspectRatio === "9:16") {
+        imageLayer = `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`;
+      } else {
+        const imgH = Math.round(layout.W * 9 / 16);
+        const imgY = Math.round(layout.H * 0.31);
+        imageLayer = `
+  <image href="${imageDataUri}" x="${bgX}" y="${bgY}" width="${bgW}" height="${bgH}" preserveAspectRatio="xMidYMid slice" filter="url(#bgBlur)" opacity="0.65"/>
+  <rect x="0" y="0" width="${layout.W}" height="${layout.H}" fill="#000" opacity="0.45"/>
+  <image href="${imageDataUri}" x="0" y="${imgY}" width="${layout.W}" height="${imgH}" preserveAspectRatio="xMidYMid meet"/>
+  <rect x="0" y="${imgY}" width="${layout.W}" height="${imgH}" fill="none" stroke="#ffffff" stroke-width="2" stroke-opacity="0.15"/>`;
+      }
+    } else {
+      if (imageAspectRatio === "9:16") {
+        const imgW = Math.round(layout.H * 9 / 16);
+        const imgX = Math.round((layout.W - imgW) / 2);
+        imageLayer = `
+  <image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice" filter="url(#bgBlur)" opacity="0.65"/>
+  <rect x="0" y="0" width="${layout.W}" height="${layout.H}" fill="#000" opacity="0.45"/>
+  <image href="${imageDataUri}" x="${imgX}" y="0" width="${imgW}" height="${layout.H}" preserveAspectRatio="xMidYMid meet"/>
+  <rect x="${imgX}" y="0" width="${imgW}" height="${layout.H}" fill="none" stroke="#ffffff" stroke-width="2" stroke-opacity="0.15"/>`;
+      } else {
+        imageLayer = `<image href="${imageDataUri}" x="${-pad}" y="${-pad}" width="${W + pad * 2}" height="${H + pad * 2}" preserveAspectRatio="xMidYMid slice"/>`;
+      }
+    }
+  } else {
+    imageLayer = renderFallbackImage(frame, palette, layout);
+  }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <defs>
+    <filter id="bgBlur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="25"/>
+    </filter>
     <linearGradient id="captionPanel" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#082f3f"/>
       <stop offset="55%" stop-color="#123b67"/>
@@ -581,6 +645,19 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout })
       <stop offset="45%" stop-color="#020817" stop-opacity="0.35"/>
       <stop offset="100%" stop-color="#020817" stop-opacity="0.92"/>
     </linearGradient>
+    <radialGradient id="centerVignette" cx="50%" cy="45%" r="74%">
+      <stop offset="0%" stop-color="#020817" stop-opacity="0.12"/>
+      <stop offset="58%" stop-color="#020817" stop-opacity="0.38"/>
+      <stop offset="100%" stop-color="#020817" stop-opacity="0.82"/>
+    </radialGradient>
+    <radialGradient id="verticalCenterVignette" cx="50%" cy="42%" r="78%">
+      <stop offset="0%" stop-color="#020817" stop-opacity="0.16"/>
+      <stop offset="56%" stop-color="#020817" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#020817" stop-opacity="0.86"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#00152e" flood-opacity="0.28"/>
+    </filter>
     <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#000000" flood-opacity="0.28"/>
     </filter>
@@ -593,7 +670,7 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout })
   ${imageLayer}
   <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.16"/>
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" ? `<rect x="0" y="${Math.round(H * 0.838)}" width="${W}" height="${Math.round(H * 0.162)}" fill="url(#bottomCleanGradient)"/>` : ""}
-  ${frame.kind === "cover" ? renderCoverOverlay(story, frame, layout) : ""}
+  ${needsCoverOverlay ? renderCoverFallbackOverlay(story, layout) : ""}
   ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame, layout) : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
   ${renderPodcastHosts(frame, layout)}
@@ -601,9 +678,6 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout })
   ${renderPodcastCaption(frame, layout)}` : ""}
   ${frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
   ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame, { layout }) : ""}
-  <rect x="${CAPTION_X}" y="${CAPTION_Y}" width="${CAPTION_W}" height="${CAPTION_H}" rx="34" fill="#04111f" opacity="0.61"/>
-  <rect x="${CAPTION_X}" y="${CAPTION_Y}" width="${CAPTION_W}" height="${CAPTION_H}" rx="34" fill="none" stroke="#93c5fd" stroke-width="2.5" opacity="0.52"/>
-  <rect x="${CAPTION_X + 4}" y="${CAPTION_Y + 4}" width="${CAPTION_W - 8}" height="${CAPTION_H - 8}" rx="30" fill="none" stroke="#ffffff" stroke-width="1.3" opacity="0.18"/>
   ${renderBottomText(frame, layout)}` : ""}
 </svg>`;
 }
@@ -671,117 +745,49 @@ function renderPodcastBottomText(frame, textX, captionY, captionH, layout) {
   const englishFont = englishLines.length > 1 ? 42 : 46;
   const chineseFont = chineseLines.length > 1 ? 27 : 29;
   const englishY = captionY + 118;
-  const chineseY = captionY + 188;
+  const chineseY = captionY + 206;
   return `
-  ${renderEnglishCaptionLinesAt(englishLines, frame.highlightedTerm, englishY, englishFont, textX)}
-  ${chineseLines.map((line, index) => `<text x="${textX}" y="${chineseY + index * 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.84" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  ${renderEnglishCaptionLinesAt(englishLines, frame.highlightedTerm, englishY, englishFont, textX, { lineBackground: false })}
+  ${renderChineseCaptionLinesAt(chineseLines, frame.vocabTranslation, chineseY, chineseFont, textX, { lineBackground: false })}`;
 }
 
-function renderCoverOverlay(story, frame, layout) {
-  const { W, H } = layout;
-  const gradeLevel = estimateUsGradeLevel(story);
-
-  // Responsive dimensions
-  const titleWrap = layout.isPortrait ? 18 : 24;
-  const titleLines = wrapWords(story.title || frame.title || "English Story", titleWrap).slice(0, 3);
-  const summaryWrap = layout.isPortrait ? 32 : 44;
-  const summaryLines = wrapMixed(story.summary || "Practice listening, reading, and speaking with clear English.", summaryWrap).slice(0, 2);
-
-  // Layout positions
-  const centerX = Math.round(W / 2);
-  const contentX = layout.isPortrait ? Math.round(W * 0.1) : Math.round(W * 0.12);
-  const contentW = layout.isPortrait ? Math.round(W * 0.8) : Math.round(W * 0.76);
-
-  // Title area
-  const titleFontSize = layout.isPortrait ? (titleLines.length > 1 ? 44 : 52) : (titleLines.length > 1 ? 56 : 68);
-  const titleLineHeight = Math.round(titleFontSize * 1.3);
-  const titleHeight = titleLines.length * titleLineHeight;
-
-  // Spacing and sizing
-  const btnSize = layout.isPortrait ? Math.round(W * 0.22) : Math.round(W * 0.12);
-  const btnGap = Math.round(H * 0.08);
-  const listenGap = Math.round(H * 0.05);
-  const listenHeight = 40;
-  const summaryGap = Math.round(H * 0.05);
-  const summaryLineHeight = Math.round(H * 0.035);
-  const summaryHeight = summaryLines.length * summaryLineHeight;
-  const diffGap = Math.round(H * 0.03);
-  const diffHeight = 30;
-
-  // Dynamic vertical centering
-  const totalContentH = titleHeight + btnGap + btnSize + listenGap + listenHeight + summaryGap + summaryHeight + diffGap + diffHeight;
-  const titleStartY = Math.max(Math.round(H * 0.05), Math.round((H - totalContentH) / 2));
-
-  // Layout positions
-  const btnY = titleStartY + titleHeight + btnGap;
-  const btnRx = Math.round(btnSize * 0.28);
-  
-  // Triangle play icon
-  const triSize = Math.round(btnSize * 0.32);
-  const triLeft = centerX - Math.round(triSize * 0.4);
-  const triRight = centerX + Math.round(triSize * 0.5);
-  const triTop = btnY + Math.round(btnSize * 0.5) - Math.round(triSize * 0.5);
-  const triBottom = btnY + Math.round(btnSize * 0.5) + Math.round(triSize * 0.5);
-
-  // Text below button
-  const listenY = btnY + btnSize + listenGap;
-  const summaryY = listenY + listenHeight + summaryGap;
-  const diffY = summaryY + summaryHeight + diffGap;
-
-  return `
-  <!-- Semi-transparent overlay -->
-  <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.35"/>
-
-  <!-- Main content card -->
-  <rect x="${contentX - 20}" y="${titleStartY - 70}" width="${contentW + 40}" height="${diffY - titleStartY + 110}" rx="32" fill="#fff" opacity="0.92"/>
-
-  <!-- Brand badge -->
-  <rect x="${contentX}" y="${titleStartY - 45}" width="180" height="42" rx="21" fill="#3b82f6"/>
-  <text x="${contentX + 90}" y="${titleStartY - 18}" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="800" letter-spacing="3" fill="#fff">ECHOENGLISH</text>
-
-  <!-- Title -->
-  ${titleLines.map((line, i) => `<text x="${centerX}" y="${titleStartY + i * titleLineHeight + titleFontSize}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${titleFontSize}" font-weight="900" fill="#1e293b">${escapeXml(line)}</text>`).join("\n  ")}
-
-  <!-- Play button -->
-  <rect x="${centerX - btnSize / 2}" y="${btnY}" width="${btnSize}" height="${btnSize}" rx="${btnRx}" fill="#3b82f6"/>
-  <polygon points="${triLeft},${triTop} ${triLeft},${triBottom} ${triRight},${Math.round((triTop + triBottom) / 2)}" fill="#fff"/>
-
-  <!-- Listen text -->
-  <text x="${centerX}" y="${listenY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="800" fill="#1e293b">Listen &amp; Shadow</text>
-  <text x="${centerX}" y="${listenY + 34}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="700" fill="#64748b">边听边读 · 口语跟读</text>
-
-  <!-- Summary -->
-  ${summaryLines.map((line, i) => `<text x="${centerX}" y="${summaryY + i * summaryLineHeight}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="600" fill="#475569">${escapeXml(line)}</text>`).join("\n  ")}
-
-  <!-- Difficulty -->
-  <text x="${centerX}" y="${diffY}" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#94a3b8">Difficulty: U.S. Grade ${escapeXml(gradeLevel)}</text>`;
+function renderCoverFallbackOverlay(story, layout) {
+  return renderCoverOverlayContent(story, {
+    W: layout.W,
+    H: layout.H,
+    isVertical: layout.isPortrait
+  });
 }
-
 function renderVocabularyReviewOverlay(frame, layout) {
   const { W, H } = layout;
   const vocabulary = Array.isArray(frame.vocabulary) ? frame.vocabulary.slice(0, 54) : [];
   const columns = layout.isPortrait ? 2 : 3;
   const rowsPerColumn = Math.max(1, Math.ceil(vocabulary.length / columns));
-  const columnWidth = layout.isPortrait ? Math.round(W * 0.42) : 560;
-  const startX = layout.isPortrait ? Math.round(W * 0.08) : 170;
-  const startY = layout.isPortrait ? Math.round(H * 0.18) : 276;
-  const dense = rowsPerColumn > 13;
-  const rowHeight = dense ? 39 : 48;
-  const wordFont = dense ? 18 : 21;
-  const phoneticFont = dense ? 14 : 16;
-  const chineseFont = dense ? 16 : 19;
+  const columnWidth = layout.isPortrait ? Math.round(W * 0.44) : 560;
+  const startX = layout.isPortrait ? Math.round(W * 0.07) : 170;
+  
   const panelPad = Math.round(W * 0.0625);
   const panelW = W - panelPad * 2;
   const panelH = Math.round(H * 0.833);
   const panelY = Math.round(H * 0.083);
   const innerPad = Math.round(W * 0.016);
 
+  const title1Y = panelY + Math.round(layout.isPortrait ? H * 0.035 : H * 0.074);
+  const title2Y = panelY + Math.round(layout.isPortrait ? H * 0.055 : H * 0.115);
+  const startY = title2Y + (layout.isPortrait ? 40 : 60);
+
+  const dense = rowsPerColumn > 13;
+  const rowHeight = dense ? 39 : 48;
+  const wordFont = layout.isPortrait ? (dense ? 16 : 18) : (dense ? 18 : 21);
+  const phoneticFont = layout.isPortrait ? (dense ? 12 : 14) : (dense ? 14 : 16);
+  const chineseFont = layout.isPortrait ? (dense ? 14 : 16) : (dense ? 16 : 19);
+
   return `
   <rect x="0" y="0" width="${W}" height="${H}" fill="#020817" opacity="0.52"/>
   <rect x="${panelPad}" y="${panelY}" width="${panelW}" height="${panelH}" rx="44" fill="#f8fbff" opacity="0.94"/>
   <rect x="${panelPad + innerPad}" y="${panelY + innerPad * 2}" width="${panelW - innerPad * 2}" height="${panelH - innerPad * 4}" rx="34" fill="none" stroke="#bfdbfe" stroke-width="2" opacity="0.46"/>
-  <text x="${panelPad + innerPad * 2.5}" y="${panelY + Math.round(H * 0.074)}" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
-  <text x="${panelPad + innerPad * 2.5}" y="${panelY + Math.round(H * 0.115)}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
+  <text x="${panelPad + innerPad * 2.5}" y="${title1Y}" font-family="Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="5" fill="#1d4ed8">VOCABULARY REVIEW</text>
+  <text x="${panelPad + innerPad * 2.5}" y="${title2Y}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="30" font-weight="800" fill="#334155">难点词汇总复习：单词 / 音标 / 中文释义</text>
   ${vocabulary.map((entry, index) => {
     const column = Math.floor(index / rowsPerColumn);
     const row = index % rowsPerColumn;
@@ -790,25 +796,31 @@ function renderVocabularyReviewOverlay(frame, layout) {
     const word = entry.word || entry[0] || "";
     const translation = entry.translation || entry[1] || "";
     const phonetic = entry.phonetic || entry[2] || "";
-    return renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont });
+    return renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait: layout.isPortrait });
   }).join("\n  ")}`;
 }
 
-function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont }) {
-  const wordText = fitSvgText(word, 22);
-  const phoneticText = fitSvgText(phonetic, 24);
+function renderReviewEntry({ x, y, word, phonetic, translation, rowHeight, wordFont, phoneticFont, chineseFont, isPortrait }) {
+  const wordText = fitSvgText(word, isPortrait ? 15 : 22);
+  const phoneticText = fitSvgText(phonetic, isPortrait ? 17 : 24);
   const cleanTranslation = translation && translation !== "重点词" ? translation : "";
-  const translationText = cleanTranslation ? fitSvgText(cleanTranslation, 18) : "";
-  const wordSize = fitFontSize(wordText, wordFont, 150);
-  const phoneticSize = fitFontSize(phoneticText, phoneticFont, 135);
-  const translationSize = translationText ? fitFontSize(translationText, chineseFont, 205, true) : chineseFont;
+  const translationText = cleanTranslation ? fitSvgText(cleanTranslation, isPortrait ? 13 : 18) : "";
+  
+  const wordSize = fitFontSize(wordText, wordFont, isPortrait ? 105 : 150);
+  const phoneticSize = fitFontSize(phoneticText, phoneticFont, isPortrait ? 95 : 135);
+  const translationSize = translationText ? fitFontSize(translationText, chineseFont, isPortrait ? 130 : 205, true) : chineseFont;
+  
+  const pX = isPortrait ? x + 115 : x + 168;
+  const tX = isPortrait ? x + 230 : x + 326;
+  const lineW = isPortrait ? 415 : 510;
   const baseline = y + Math.max(20, Math.round(rowHeight * 0.58));
+  
   return `
   <g>
-    <line x1="${x}" y1="${y + rowHeight - 7}" x2="${x + 510}" y2="${y + rowHeight - 7}" stroke="#dbeafe" stroke-width="1.2" opacity="0.58"/>
+    <line x1="${x}" y1="${y + rowHeight - 7}" x2="${x + lineW}" y2="${y + rowHeight - 7}" stroke="#dbeafe" stroke-width="1.2" opacity="0.58"/>
     <text x="${x}" y="${baseline}" font-family="Arial, sans-serif" font-size="${wordSize}" font-weight="900" fill="#0f172a">${escapeXml(wordText)}</text>
-    <text x="${x + 168}" y="${baseline}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
-    ${translationText ? `<text x="${x + 326}" y="${baseline}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>` : ""}
+    <text x="${pX}" y="${baseline}" font-family="Arial, sans-serif" font-size="${phoneticSize}" font-weight="800" fill="#2563eb">${escapeXml(phoneticText)}</text>
+    ${translationText ? `<text x="${tX}" y="${baseline}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${translationSize}" font-weight="800" fill="#475569">${escapeXml(translationText)}</text>` : ""}
   </g>`;
 }
 
@@ -817,22 +829,32 @@ function renderVocabularyOverlay(frame, options = {}) {
   if (!word) return "";
   const layout = options.layout;
   if (options.podcast) return renderPodcastVocabularyOverlay(frame, layout);
+  
   const W = layout ? layout.W : 1920;
   const H = layout ? layout.H : 1080;
+  const isP = layout && layout.isPortrait;
+  
   const wordLines = wrapMixed(word, 24).slice(0, 1);
   const phoneticLines = wrapMixed(phonetic || "", 26).slice(0, 1);
   const hasTranslation = translation && translation !== "重点词";
   const translationLines = hasTranslation ? wrapMixed(translation, 18).slice(0, 1) : [];
-  const x = options.podcast ? Math.round(W * 0.388) : Math.round(W * 0.745);
-  const y = options.podcast ? Math.round(H * 0.076) : Math.round(H * 0.065);
-  const width = Math.round(W * 0.224);
-  const height = hasTranslation ? (options.podcast ? 134 : 136) : 100;
-  return `
-  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="#061527" opacity="0.72"/>
-  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="22" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.46"/>
-  ${wordLines.map((line) => `<text x="${x + 28}" y="${y + 42}" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}
-  ${phoneticLines.map((line) => `<text x="${x + 28}" y="${y + 72}" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f59e0b">${escapeXml(line)}</text>`).join("\n  ")}
-  ${translationLines.map((line) => `<text x="${x + 28}" y="${y + 104}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="24" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  
+  const width = isP ? Math.round(W * 0.48) : Math.round(W * 0.22);
+  const x = isP ? (W - width) / 2 : Math.round(W * 0.74);
+  const height = hasTranslation ? (isP ? 116 : 104) : (isP ? 76 : 64);
+  const y = isP ? Math.round(H * 0.13) : Math.round(H * 0.14);
+  
+  if (isP) {
+    return `
+  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="32" fill="#0f172a" opacity="0.85"/>
+  ${wordLines.map((line) => `<text x="${x + width/2}" y="${y + 54}" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="40" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`).join("\n  ")}
+  ${translationLines.map((line) => `<text x="${x + width/2}" y="${y + 94}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="28" font-weight="850" fill="#cbd5e1">${escapeXml(line)}</text>`).join("\n  ")}`;
+  } else {
+    return `
+  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="24" fill="#0f172a" opacity="0.85"/>
+  ${wordLines.map((line) => `<text x="${x + 32}" y="${y + 48}" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="900" fill="#ffffff">${escapeXml(line)}</text>`).join("\n  ")}
+  ${translationLines.map((line) => `<text x="${x + 32}" y="${y + 84}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="26" font-weight="850" fill="#cbd5e1">${escapeXml(line)}</text>`).join("\n  ")}`;
+  }
 }
 
 function renderPodcastVocabularyOverlay(frame, layout) {
@@ -844,63 +866,153 @@ function renderPodcastVocabularyOverlay(frame, layout) {
   const width = Math.round(W * 0.224);
   const accent = isHostB ? "#f59e0b" : "#38bdf8";
   const word = fitSvgText(frame.vocabWord || "", 23);
-  const phonetic = fitSvgText(frame.vocabPhonetic || "", 25);
   const rawTranslation = frame.vocabTranslation || "";
   const hasTranslation = rawTranslation && rawTranslation !== "重点词";
-  const translation = hasTranslation ? fitSvgText(rawTranslation, 14) : "";
-  const boxHeight = hasTranslation ? 82 : 58;
-  const phoneticY = hasTranslation ? y + 63 : y + 48;
+  const translation = hasTranslation ? fitSvgText(rawTranslation, 18) : "";
+  const boxHeight = hasTranslation ? 82 : 48;
+  const translationY = y + 63;
   return `
   <rect x="${x}" y="${y}" width="${width}" height="${boxHeight}" rx="24" fill="#061527" opacity="0.72"/>
   <rect x="${x}" y="${y}" width="${width}" height="${boxHeight}" rx="24" fill="none" stroke="${accent}" stroke-width="2.2" opacity="0.62"/>
   <text x="${x + 28}" y="${y + 33}" font-family="Georgia, 'Times New Roman', serif" font-size="${fitFontSize(word, 25, 190)}" font-weight="900" fill="#ffffff" filter="url(#textShadow)">${escapeXml(word)}</text>
-  <text x="${x + 28}" y="${phoneticY}" font-family="Arial, sans-serif" font-size="${fitFontSize(phonetic, 18, 175)}" font-weight="800" fill="#f59e0b">${escapeXml(phonetic)}</text>
-  ${hasTranslation ? `<text x="${x + 245}" y="${phoneticY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${fitFontSize(translation, 20, 140, true)}" font-weight="850" fill="#ffffff" filter="url(#textShadow)">${escapeXml(translation)}</text>` : ""}`;
+  ${hasTranslation ? `<text x="${x + 28}" y="${translationY}" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${fitFontSize(translation, 20, 240, true)}" font-weight="850" fill="#cbd5e1" filter="url(#textShadow)">${escapeXml(translation)}</text>` : ""}`;
+}
+
+function estimateTextWidth(text, fontSize, isChinese = false) {
+  if (!text) return 0;
+  if (isChinese) {
+    let w = 0;
+    for (let i = 0; i < text.length; i++) {
+      w += text.charCodeAt(i) > 255 ? fontSize * 1.05 : fontSize * 0.6;
+    }
+    return w;
+  }
+  let w = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if ('fijl., \'!|I'.includes(char)) w += fontSize * 0.35;
+    else if ('mwMWOQ'.includes(char)) w += fontSize * 0.85;
+    else if (char >= 'A' && char <= 'Z') w += fontSize * 0.75;
+    else w += fontSize * 0.58;
+  }
+  return w;
 }
 
 function renderBottomText(frame, layout) {
-  const { W, CAPTION_Y, CAPTION_H } = layout;
-  const wrapLen = layout.isPortrait ? 42 : 52;
-  const chineseWrapLen = layout.isPortrait ? 36 : 44;
+  const CAPTION_Y = layout.CAPTION_Y;
+  const CAPTION_H = layout.CAPTION_H;
+
+  const wrapLen = layout.isPortrait ? 32 : 46;
+  const chineseWrapLen = layout.isPortrait ? 28 : 42;
   const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 3);
-  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 3);
-  const englishFont = englishLines.length > 2 ? 42 : englishLines.length > 1 ? 48 : 52;
-  const chineseFont = chineseLines.length > 2 ? 26 : chineseLines.length > 1 ? 30 : 33;
-  const englishLineHeight = englishLines.length > 2 ? 46 : 52;
-  const chineseLineHeight = chineseLines.length > 2 ? 34 : 38;
-  const gap = englishLines.length > 2 || chineseLines.length > 2 ? 32 : 42;
+  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
+
+  const isVocab = frame.kind === "vocabulary" || !!frame.vocabWord;
+  const englishFont = isVocab
+    ? (layout.isPortrait ? 44 : 54)
+    : (layout.isPortrait ? (englishLines.length > 2 ? 46 : 52) : (englishLines.length > 2 ? 54 : 64));
+  const chineseFont = isVocab ? (layout.isPortrait ? 32 : 34) : (layout.isPortrait ? 36 : 40);
+
+  const englishLineHeight = Math.round(englishFont * 1.45);
+  const chineseLineHeight = Math.round(chineseFont * 1.55);
+  const gap = layout.isPortrait ? 24 : 36;
+
   const englishBlockHeight = englishFont + Math.max(0, englishLines.length - 1) * englishLineHeight;
   const chineseBlockHeight = chineseFont + Math.max(0, chineseLines.length - 1) * chineseLineHeight;
   const totalTextHeight = englishBlockHeight + gap + chineseBlockHeight;
-  const top = CAPTION_Y + Math.max(34, (CAPTION_H - totalTextHeight) / 2);
+  const top = CAPTION_Y;
   const englishY = top + englishFont;
   const chineseY = top + englishBlockHeight + gap + chineseFont;
+  const maxLineWidth = Math.max(
+    1,
+    ...englishLines.map((line) => estimateTextWidth(line, englishFont)),
+    ...chineseLines.map((line) => estimateTextWidth(line, chineseFont, true))
+  );
+  const panelPadX = layout.isPortrait ? 48 : 64;
+  const panelPadY = layout.isPortrait ? 28 : 34;
+  const panelW = Math.min(layout.CAPTION_W, Math.max(layout.W * (layout.isPortrait ? 0.70 : 0.48), maxLineWidth + panelPadX * 2));
+  const panelX = Math.round((layout.W - panelW) / 2);
+  const panelY = Math.round(top - panelPadY);
+  const panelH = Math.round(totalTextHeight + panelPadY * 2);
+  const panelRx = layout.isPortrait ? 24 : 28;
+
   return `
-  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont, layout)}
-  ${chineseLines.map((line, index) => `<text x="${W / 2}" y="${chineseY + index * 38}" text-anchor="middle" font-family="PingFang SC, Noto Sans CJK SC, Arial, sans-serif" font-size="${chineseFont}" font-weight="800" fill="#e2e8f0" opacity="0.86" filter="url(#textShadow)">${escapeXml(line)}</text>`).join("\n  ")}`;
+  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="${panelRx}" fill="#000000" opacity="0.72"/>
+  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont, layout, { lineBackground: false })}
+  ${renderChineseCaptionLinesAt(chineseLines, frame.vocabTranslation, chineseY, chineseFont, layout.W / 2, { lineBackground: false })}`;
 }
 
-function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize, layout) {
-  return renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, layout.W / 2);
+function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize, layout, options = {}) {
+  return renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, layout.W / 2, options);
 }
 
-function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, centerX) {
-  const plain = lines.map((line, index) => ({ line, y: startY + index * 52 }));
-  if (!highlightedTerm) {
-    return plain.map(({ line, y }) => renderCenteredTextAt(line, y, fontSize, "#ffffff", centerX)).join("\n  ");
-  }
+function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, centerX, options = {}) {
+  const normalizedTerm = highlightedTerm ? normalizeTermForMatch(highlightedTerm) : null;
+  const showLineBackground = options.lineBackground !== false;
+  const texts = [];
+  const shadow = `filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.9))"`;
 
-  const normalizedTerm = normalizeTermForMatch(highlightedTerm);
-  return plain.map(({ line, y }) => {
-    const match = findTermInLine(line, normalizedTerm);
-    if (!match) return renderCenteredTextAt(line, y, fontSize, "#ffffff", centerX);
-    const before = line.slice(0, match.start);
-    const term = line.slice(match.start, match.end);
-    const after = line.slice(match.end);
-    return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="#ffffff" filter="url(#textShadow)">
-      <tspan xml:space="preserve">${escapeXml(before)}</tspan><tspan fill="#f59e0b">${escapeXml(term)}</tspan><tspan xml:space="preserve">${escapeXml(after)}</tspan>
-    </text>`;
-  }).join("\n  ");
+  lines.forEach((line, index) => {
+    const y = startY + index * (fontSize * 1.3);
+
+    if (normalizedTerm) {
+      const match = findTermInLine(line, normalizedTerm);
+      if (match) {
+        const before = line.slice(0, match.start);
+        const term = line.slice(match.start, match.end);
+        const after = line.slice(match.end);
+
+        // Measure widths to position highlight rect precisely
+        const beforeW = estimateTextWidth(before, fontSize);
+        const termW = estimateTextWidth(term, fontSize);
+        const totalW = estimateTextWidth(line, fontSize);
+        const lineStartX = centerX - totalW / 2;
+        const termX = lineStartX + beforeW;
+        const hPad = fontSize * 0.18;
+        const hH = fontSize * 1.18;
+        const hY = y - fontSize * 0.88;
+        texts.push(`<rect x="${termX - hPad}" y="${hY}" width="${termW + hPad * 2}" height="${hH}" rx="${hH * 0.28}" fill="#facc15"/>`);
+        texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" ${shadow}><tspan fill="#ffffff">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#ffffff">${escapeXml(after)}</tspan></text>`);
+        return;
+      }
+    }
+    texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" fill="#ffffff" ${shadow}>${escapeXml(line)}</text>`);
+  });
+
+  return texts.join("\n  ");
+}
+
+function renderChineseCaptionLinesAt(lines, vocabTranslation, startY, fontSize, centerX, options = {}) {
+  const showLineBackground = options.lineBackground !== false;
+  const texts = [];
+  const shadow = `filter="drop-shadow(0px 1px 3px rgba(0,0,0,0.95))"`;
+
+  lines.forEach((line, index) => {
+    const y = startY + index * (fontSize * 1.4);
+
+    if (vocabTranslation && line.includes(vocabTranslation)) {
+      const matchStart = line.indexOf(vocabTranslation);
+      const matchEnd = matchStart + vocabTranslation.length;
+      const before = line.slice(0, matchStart);
+      const term = line.slice(matchStart, matchEnd);
+      const after = line.slice(matchEnd);
+
+      const beforeW = estimateTextWidth(before, fontSize, true);
+      const termW = estimateTextWidth(term, fontSize, true);
+      const totalW = estimateTextWidth(line, fontSize, true);
+      const lineStartX = centerX - totalW / 2;
+      const termX = lineStartX + beforeW;
+      const hPad = fontSize * 0.22;
+      const hH = fontSize * 1.18;
+      const hY = y - fontSize * 0.88;
+      texts.push(`<rect x="${termX - hPad}" y="${hY}" width="${termW + hPad * 2}" height="${hH}" rx="${hH * 0.28}" fill="#facc15"/>`);
+      texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" ${shadow}><tspan fill="#e2e8f0">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#e2e8f0">${escapeXml(after)}</tspan></text>`);
+    } else {
+      texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" fill="#e2e8f0" ${shadow}>${escapeXml(line)}</text>`);
+    }
+  });
+
+  return texts.join("\n  ");
 }
 
 function renderCenteredText(line, y, fontSize, fill, layout) {
@@ -908,7 +1020,7 @@ function renderCenteredText(line, y, fontSize, fill, layout) {
 }
 
 function renderCenteredTextAt(line, y, fontSize, fill, centerX) {
-  return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-style="italic" font-weight="750" fill="${fill}" filter="url(#textShadow)">${escapeXml(line)}</text>`;
+  return `<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" fill="${fill}">${escapeXml(line)}</text>`;
 }
 
 function renderFallbackImage(frame, palette, layout) {
