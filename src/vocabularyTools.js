@@ -20,41 +20,73 @@ const VOCAB_BANK = {
   challenge: ["挑战", "/ˈtʃælɪndʒ/"],
   commercial: ["商业的", "/kəˈmɜːrʃəl/"],
   competitor: ["竞争者", "/kəmˈpetɪtər/"],
+  chemistry: ["化学", "/ˈkemɪstri/"],
+  contribution: ["贡献", "/ˌkɑːntrɪˈbjuːʃən/"],
   contract: ["合同", "/ˈkɑːntrækt/"],
+  courage: ["勇气", "/ˈkɜːrɪdʒ/"],
+  creativity: ["创造力", "/ˌkriːeɪˈtɪvəti/"],
   delivery: ["交付", "/dɪˈlɪvəri/"],
   development: ["发展；开发", "/dɪˈveləpmənt/"],
+  discipline: ["自律；训练", "/ˈdɪsəplɪn/"],
+  discovery: ["发现", "/dɪˈskʌvəri/"],
+  education: ["教育", "/ˌedʒuˈkeɪʃən/"],
   engineer: ["工程师", "/ˌendʒɪˈnɪr/"],
+  evidence: ["证据", "/ˈevɪdəns/"],
+  experiment: ["实验", "/ɪkˈsperɪmənt/"],
   expansion: ["扩张", "/ɪkˈspænʃən/"],
   facility: ["设施", "/fəˈsɪləti/"],
   factory: ["工厂", "/ˈfæktəri/"],
   founder: ["创始人", "/ˈfaʊndər/"],
   funding: ["资金", "/ˈfʌndɪŋ/"],
   growth: ["增长", "/ɡroʊθ/"],
+  heritage: ["遗产；传统", "/ˈherɪtɪdʒ/"],
   impact: ["影响", "/ˈɪmpækt/"],
+  independence: ["独立", "/ˌɪndɪˈpendəns/"],
+  influence: ["影响力", "/ˈɪnfluəns/"],
   innovation: ["创新", "/ˌɪnəˈveɪʃən/"],
   investment: ["投资", "/ɪnˈvestmənt/"],
+  laboratory: ["实验室", "/ˈlæbrətɔːri/"],
+  legacy: ["遗产；影响", "/ˈleɡəsi/"],
   launch: ["发射；发布", "/lɔːntʃ/"],
   manufacturing: ["制造业", "/ˌmænjəˈfæktʃərɪŋ/"],
   market: ["市场", "/ˈmɑːrkɪt/"],
   milestone: ["里程碑", "/ˈmaɪlstoʊn/"],
   mission: ["任务", "/ˈmɪʃən/"],
+  mentor: ["导师", "/ˈmentɔːr/"],
+  movement: ["运动；行动", "/ˈmuːvmənt/"],
+  nobel: ["诺贝尔奖", "/noʊˈbel/"],
   orbit: ["轨道", "/ˈɔːrbɪt/"],
   partnership: ["合作关系", "/ˈpɑːrtnərʃɪp/"],
   payload: ["有效载荷", "/ˈpeɪloʊd/"],
+  perseverance: ["毅力", "/ˌpɜːrsəˈvɪrəns/"],
+  physics: ["物理学", "/ˈfɪzɪks/"],
+  pioneer: ["先驱", "/ˌpaɪəˈnɪr/"],
+  polonium: ["钋", "/pəˈloʊniəm/"],
   production: ["生产", "/prəˈdʌkʃən/"],
   prototype: ["原型", "/ˈproʊtətaɪp/"],
+  professor: ["教授", "/prəˈfesər/"],
+  radiation: ["辐射", "/ˌreɪdiˈeɪʃən/"],
+  radioactivity: ["放射性", "/ˌreɪdioʊækˈtɪvəti/"],
+  radium: ["镭", "/ˈreɪdiəm/"],
   recovery: ["回收；恢复", "/rɪˈkʌvəri/"],
   regulation: ["监管；规定", "/ˌreɡjəˈleɪʃən/"],
+  reform: ["改革", "/rɪˈfɔːrm/"],
+  research: ["研究", "/rɪˈsɜːrtʃ/"],
+  resilience: ["韧性", "/rɪˈzɪliəns/"],
   reusable: ["可重复使用的", "/ˌriːˈjuːzəbəl/"],
   reusability: ["可重复使用性", "/ˌriːjuːzəˈbɪləti/"],
   revenue: ["收入", "/ˈrevənuː/"],
   rocket: ["火箭", "/ˈrɑːkɪt/"],
+  sacrifice: ["牺牲", "/ˈsækrɪfaɪs/"],
   satellite: ["卫星", "/ˈsætəlaɪt/"],
+  scholarship: ["奖学金；学术研究", "/ˈskɑːlərʃɪp/"],
+  scientist: ["科学家", "/ˈsaɪəntɪst/"],
   spacecraft: ["航天器", "/ˈspeɪskræft/"],
   strategy: ["策略", "/ˈstrætədʒi/"],
   supplier: ["供应商", "/səˈplaɪər/"],
   technology: ["技术", "/tekˈnɑːlədʒi/"],
   timeline: ["时间线", "/ˈtaɪmlaɪn/"],
+  university: ["大学", "/ˌjuːnɪˈvɜːrsəti/"],
   vehicle: ["交通工具；飞行器", "/ˈviːəkəl/"],
   vision: ["愿景", "/ˈvɪʒən/"]
 };
@@ -71,6 +103,30 @@ const PHRASE_BANK = {
   "supply mission": ["补给任务", "/səˈplaɪ ˈmɪʃən/"],
   "test flight": ["试飞", "/test flaɪt/"]
 };
+
+const FALLBACK_VOCAB_TERMS = [
+  "achievement",
+  "contribution",
+  "legacy",
+  "influence",
+  "challenge",
+  "resilience",
+  "discipline",
+  "breakthrough",
+  "innovation",
+  "research",
+  "discovery",
+  "education",
+  "evidence",
+  "heritage",
+  "reform",
+  "impact",
+  "milestone",
+  "strategy",
+  "vision",
+  "courage",
+  "perseverance"
+];
 
 function enrichStoryVocabulary(story) {
   if (!story || !Array.isArray(story.sections)) return story;
@@ -89,6 +145,18 @@ function enrichStoryVocabulary(story) {
       next.push(item);
       review.push({ word: candidate.word, translation: candidate.translation, phonetic: candidate.phonetic });
       if (next.length >= 3) break;
+    }
+
+    for (const term of FALLBACK_VOCAB_TERMS) {
+      if (next.length >= 3) break;
+      const key = normalizeTerm(term);
+      if (!key || used.has(key) || isTooSimple(key)) continue;
+      const bank = lookupBank(key);
+      if (!bank.translation || !bank.phonetic) continue;
+      used.add(key);
+      const item = [key, bank.translation, bank.phonetic];
+      next.push(item);
+      review.push({ word: key, translation: bank.translation, phonetic: bank.phonetic });
     }
 
     return {

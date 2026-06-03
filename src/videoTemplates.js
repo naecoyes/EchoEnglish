@@ -32,6 +32,7 @@ const VIDEO_TEMPLATES = [
     searchHint: "biography early life education career founder official profile interview timeline",
     draftGuidance: "Use only public biography facts. Do not invent private conversations or unsupported emotions."
   },
+  buildPublicFigureBiographyTemplate(),
   {
     id: "city-travel",
     title: "City Travel Story",
@@ -87,6 +88,7 @@ const VIDEO_TEMPLATES = [
     searchHint: "daily life English story beginner vocabulary realistic drama",
     draftGuidance: "Keep the conflict small and relatable. Do not add teaching rounds or repeated exercises."
   },
+  buildCountryHistoryTemplate(),
   {
     id: "historical-documentary",
     title: "Historical Event Documentary",
@@ -132,6 +134,69 @@ function getVideoTemplate(id) {
   return VIDEO_TEMPLATES.find((template) => template.id === id) || VIDEO_TEMPLATES.find((template) => template.id === DEFAULT_TEMPLATE_ID);
 }
 
+function buildCountryHistoryTemplate(topic = "") {
+  const subject = String(topic || "").trim();
+  return {
+    id: "country-history",
+    title: "Country History Documentary",
+    contentMode: "factual-documentary",
+    summary: subject
+      ? `A soft ancient-to-modern overview of ${subject} for English shadowing learners.`
+      : "A soft ancient-to-modern overview of a country's history for English shadowing learners.",
+    structureRules: "Move from geography and ancient origins to early civilization, key kingdoms, dynasties, or periods, outside influences, independence or modern state formation, culture and economy today, and a peaceful recap.",
+    visualStyle: "photorealistic cinematic documentary stills, maps without labels, landmarks, historic architecture, museums, artifacts, ports, city streets, public memorial spaces, soft educational tone",
+    vocabularyFocus: ["civilization", "dynasty", "kingdom", "empire", "independence", "reform", "culture", "heritage", "border", "trade", "capital", "identity"],
+    searchHint: "country history ancient origins geography civilization dynasties independence modern state culture economy official sources Britannica timeline",
+    draftGuidance: "Use a soft factual documentary voice from ancient origins to modern life. Avoid fictional protagonists, invented dialogue, heavy war detail, patriotic slogans, and political judgment."
+  };
+}
+
+function buildPublicFigureBiographyTemplate(topic = "") {
+  const subject = String(topic || "").trim();
+  return {
+    id: "public-figure-biography",
+    title: "Public Figure Biography",
+    contentMode: "factual-documentary",
+    summary: subject
+      ? `A respectful factual biography of ${subject} for English shadowing learners.`
+      : "A respectful factual biography of a public or historical figure for English shadowing learners.",
+    structureRules: "Move from early life, education, and influences to a first turning point, main work and achievements, setbacks or challenges, public impact, legacy, and a calm recap.",
+    visualStyle: "photorealistic biography documentary stills, public stages, schools, laboratories, studies, studios, city context, archival documents, tools, awards, memorial spaces, symbolic close-ups, restrained cinematic lighting",
+    vocabularyFocus: ["ambition", "discipline", "breakthrough", "legacy", "contribution", "challenge", "influence", "achievement", "resilience", "mentor", "reform", "innovation"],
+    searchHint: "public figure biography early life education career achievements awards legacy official profile Britannica timeline",
+    draftGuidance: "Use only public biography facts. Do not invent private conversations, gossip, unsupported emotions, or fictional scenes."
+  };
+}
+
+function isCountryHistoryTopic(topic) {
+  const text = String(topic || "").trim();
+  const countryNames = [
+    "japan", "china", "egypt", "brazil", "france", "germany", "india", "italy", "spain", "turkey", "iran", "thailand", "vietnam",
+    "korea", "south korea", "united states", "america", "russia", "mexico", "canada", "australia", "britain", "united kingdom",
+    "england", "greece", "peru", "morocco", "saudi arabia", "uae", "indonesia", "philippines", "malaysia", "singapore"
+  ];
+  const adjectives = [
+    "japanese", "chinese", "egyptian", "brazilian", "french", "german", "indian", "italian", "spanish", "turkish", "iranian",
+    "thai", "vietnamese", "korean", "american", "russian", "mexican", "canadian", "australian", "british", "greek", "peruvian"
+  ];
+  const names = countryNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const descriptors = adjectives.join("|");
+  const englishPattern = new RegExp(`\\b(country history|national history|history of (?:${names})|(?:${names}|${descriptors}) (?:country )?history|(?:${names}) development history)\\b`, "i");
+  const chinesePattern = /(国家历史|国家发展史|某国历史|某国发展史|中国历史|中国发展史|日本历史|日本发展史|法国历史|法国发展史|巴西历史|巴西发展史|埃及历史|埃及发展史|印度历史|印度发展史|美国历史|美国发展史|英国历史|英国发展史|德国历史|德国发展史|俄罗斯历史|俄罗斯发展史|韩国历史|韩国发展史|意大利历史|意大利发展史|西班牙历史|西班牙发展史|土耳其历史|土耳其发展史|越南历史|越南发展史|泰国历史|泰国发展史)/;
+  return englishPattern.test(text) || chinesePattern.test(text);
+}
+
+function isFounderBiographyTopic(topic) {
+  return /\b(founder|co-founder|startup founder|entrepreneur|ceo|business leader|company founder)\b/i.test(String(topic || ""))
+    || /(创始人|联合创始人|企业家|公司创办人|CEO|首席执行官)/i.test(String(topic || ""));
+}
+
+function isPublicFigureBiographyTopic(topic) {
+  const text = String(topic || "").trim();
+  return /\b(biography of|life of|profile of|biography|personal biography|public figure biography|historical figure biography)\b/i.test(text)
+    || /(人物传记|人物纪录片|传记|生平|一生|个人传记|名人传记)/.test(text);
+}
+
 function generateTemplateFromTopic(topic, minutes = 15) {
   const topicLower = (topic || "").toLowerCase();
 
@@ -140,9 +205,13 @@ function generateTemplateFromTopic(topic, minutes = 15) {
   const isFactual = factualKeywords.test(topic);
 
   // Detect specific template type
-  if (/\b(founder|biography|ceo|leader|life of)\b/i.test(topic)) {
+  if (isCountryHistoryTopic(topic)) {
+    return buildCountryHistoryTemplate(topic);
+  }
+
+  if (isFounderBiographyTopic(topic)) {
     return {
-      id: "auto-founder-biography",
+      id: "founder-biography",
       title: "Founder Biography",
       contentMode: "factual-documentary",
       summary: `A simple English biography about ${topic}.`,
@@ -152,6 +221,10 @@ function generateTemplateFromTopic(topic, minutes = 15) {
       searchHint: "biography early life education career founder official profile interview timeline",
       draftGuidance: "Use only public biography facts. Do not invent private conversations or unsupported emotions."
     };
+  }
+
+  if (isPublicFigureBiographyTopic(topic)) {
+    return buildPublicFigureBiographyTemplate(topic);
   }
 
   if (/\b(product|launch|phone|app|device|platform)\b/i.test(topic)) {
@@ -243,5 +316,7 @@ module.exports = {
   VIDEO_TEMPLATES,
   getVideoTemplate,
   listVideoTemplates,
-  generateTemplateFromTopic
+  generateTemplateFromTopic,
+  isCountryHistoryTopic,
+  isPublicFigureBiographyTopic
 };

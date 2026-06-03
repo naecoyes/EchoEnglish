@@ -153,6 +153,8 @@ This routes ffmpeg through `/opt/homebrew/bin/ffmpeg` on the Mac host, enabling 
 EchoEnglish blocks weak scripts before expensive media APIs run:
 
 - Repeated boilerplate scenes, repeated full sentences, repeated endings, missing Chinese translations, and missing vocabulary notes fail the draft quality gate.
+- Each scene requires exactly 3 vocabulary notes with the format `["word", "中文释义", "/IPA/"]` — all fields must be non-empty. Country history and public figure biography templates enforce a stricter minimum of 3 meaningful notes per scene.
+- The vocabulary bank is enriched with domain words for biographies (achievement, legacy, resilience, discipline, breakthrough, etc.) and science (radiation, experiment, physics, chemistry, etc.). A fallback pool ensures every scene reaches 3 notes even when the LLM omits them.
 - Draft generation uses the local quality gate by default. Set `ECHOENGLISH_LLM_DRAFT_VALIDATION=1` for a second LLM judge pass (slower).
 - Confirmed drafts are checked again before TTS, images, music, and video composition.
 - TTS manifests, image manifests, music manifests, and timeline manifests are saved for recovery and debugging.
@@ -194,14 +196,38 @@ outputs/{slug}/
 | Company Origin Story | factual documentary | Company history and brand origin videos |
 | Product Launch History | factual documentary | Product, car, phone, app, or platform launch stories |
 | Founder Biography | factual documentary | Founder or public figure biographies |
+| Public Figure Biography | factual documentary | Scientists, artists, athletes, writers, historical figures, and public leaders |
 | City Travel Story | fictional story | Travel English with real city details |
 | School Life Story | fictional story | Beginner school and friendship stories |
 | Mystery Adventure | fictional story | Soft mystery and clue-based stories |
 | Science And Technology | factual documentary | Science, technology, missions, inventions |
 | Daily Life Drama | fictional story | Practical daily-life English |
+| Country History Documentary | factual documentary | Ancient-to-modern country history overviews |
 | Historical Event Documentary | factual documentary | Real events and historical timelines |
 | Future Imagination Story | fictional story | Near-future learning stories |
 | Podcast Conversation | two-host dialogue | Two-host explainer videos with role-based voices |
+
+### Country History Documentary
+
+Use this template for topics such as `The History of Japan`, `Egypt country history`, `Brazil history`, `中国历史`, or `某国发展史`. EchoEnglish keeps this mode factual and calm: geography and ancient origins, early civilization, major kingdoms or periods, outside influences, independence or modern state formation, culture and economy today, then a peaceful recap.
+
+Country history videos avoid fictional protagonists, invented dialogue, heavy conflict detail, political judgment, patriotic slogans, and private imagined scenes. Image prompts favor cinematic documentary backgrounds: maps without labels, landmarks, historic architecture, museums, artifacts, ports, city streets, public memorial spaces, and soft historical reconstruction. They explicitly avoid podcast hosts, studio microphones, embedded text, readable signs, logos, watermarks, `Your Text`, and unreliable flag details. Background music uses a restrained documentary style with no vocals, lyrics, anthem, or patriotic march.
+
+### Public Figure Biography
+
+Use this template for topics such as `Biography of Marie Curie`, `Life of Nelson Mandela`, `Leonardo da Vinci biography`, `Serena Williams biography`, or `苏轼人物传记`. EchoEnglish keeps this mode factual and respectful: early life, education or influences, first turning point, main work and achievements, setbacks or challenges, public impact, legacy, and a calm recap.
+
+Public figure biographies use only public facts from search context. They avoid fictional dialogue, private family drama, gossip, unsupported emotions, hero worship, and political judgment. Image prompts favor public stages, schools, laboratories, studies, studios, city context, archival documents, tools, awards, memorial spaces, silhouettes, side views, and symbolic close-ups. They explicitly avoid podcast hosts, microphones, embedded text, readable names, logos, watermarks, `Your Text`, paparazzi style, and exact-face demands without a verified reference.
+
+### Auto Template Detection
+
+When you type a topic in the Generate page, EchoEnglish automatically detects and selects the matching template:
+
+- **Country History** — keywords like `history of Japan`, `Egypt country history`, `中国历史`, `某国发展史`
+- **Public Figure Biography** — keywords like `biography of Marie Curie`, `life of Nelson Mandela`, `人物传记`, `苏轼人物传记`
+- **Founder Biography** — keywords like `founder`, `CEO`, `创始人`
+
+Auto-detection works in both English and Chinese. You can still manually override the template selection.
 
 ### AI Template Generation
 
@@ -393,6 +419,8 @@ Use these samples when checking a release:
 | Template | Topic | Checks |
 | --- | --- | --- |
 | Company Origin Story | `Apple company development history` | factual timeline, no fictional characters, YouTube/vertical covers, no repeated ending |
+| Country History Documentary | `The History of Japan` / `Egypt country history` / `Brazil history` | ancient-to-modern soft overview, 18-24 scenes, 30-40 image beats, landmarks/artifacts, no fictional protagonist |
+| Public Figure Biography | `Biography of Marie Curie` / `Life of Nelson Mandela` / `Leonardo da Vinci biography` / `Serena Williams biography` / `苏轼人物传记` | public facts only, 18-22 scenes, 30-40 image beats, respectful tone, no invented private dialogue |
 | Daily Life Story | `The Morning Rush` | story pacing, 2-3 image beats per minute, clear bilingual captions |
 | Podcast Conversation | `How to avoid mental exhaustion` | two host images only, Mia/Milo-style voices, dialogue captions aligned by speaker |
 

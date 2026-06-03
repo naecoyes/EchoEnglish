@@ -560,7 +560,8 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
   const audioDuration = skipAudio ? 0 : await probeDuration(audioPath);
   const videoDuration = skipAudio ? 0 : await probeDuration(videoPath);
   const scriptQuality = inspectStoryQuality(story, {
-    minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0
+    minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0,
+    minimumVocabularyNotes: isCountryHistoryStory(story) || isPublicFigureBiographyStory(story) ? 3 : 2
   });
   const durationDelta = {
     audioVsSubtitlesSeconds: roundSeconds((audioDuration || 0) - subtitleLastTimestamp),
@@ -812,21 +813,32 @@ function buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio = "16
   const visualStyle = story.storyboardDesign?.visualStyle || story.outline?.visualStyle || "photorealistic cinematic documentary still";
   const factual = story.contentMode === "factual-documentary" || story.template?.contentMode === "factual-documentary";
   const podcast = story.template?.id === "podcast-dialogue";
+  const countryHistory = isCountryHistoryStory(story);
+  const publicBiography = isPublicFigureBiographyStory(story);
+  const publicBiographyOverride = publicBiography ? buildPublicBiographyImageOverride(section, moment) : "";
   const parts = [
     `Create one ${targetAspectRatio} photorealistic cinematic still image for an English shadowing video.`,
     `Video title: ${story.title}.`,
     story.template?.title ? `Video type: ${story.template.title}.` : "",
     `Overall visual style: ${visualStyle}.`,
-    section.imagePrompt ? `Base scene prompt: ${section.imagePrompt}` : "",
-    getSectionImageBeats(section)[beatIndex]?.imagePrompt ? `Beat prompt: ${getSectionImageBeats(section)[beatIndex].imagePrompt}` : "",
-    section.visual ? `Scene setting: ${section.visual}` : "",
-    moment ? `Exact sentence moment to visualize: ${moment}` : "",
+    publicBiographyOverride ? `Public figure safe scene prompt: ${publicBiographyOverride}` : "",
+    !publicBiographyOverride && section.imagePrompt ? `Base scene prompt: ${section.imagePrompt}` : "",
+    !publicBiographyOverride && getSectionImageBeats(section)[beatIndex]?.imagePrompt ? `Beat prompt: ${getSectionImageBeats(section)[beatIndex].imagePrompt}` : "",
+    !publicBiographyOverride && section.visual ? `Scene setting: ${section.visual}` : "",
+    !publicBiographyOverride && moment ? `Exact sentence moment to visualize: ${moment}` : "",
     isPersonFocusedStory(story) ? "Person-focused mode: keep one consistent public subject when a person is shown. Prefer single-person portraits or contextual object/location shots. Avoid multiple unrelated faces, random crowds, or changing the person's appearance." : "",
     factual ? "Factual documentary mode: show public, realistic, verifiable-feeling environments; avoid fictional private scenes and invented characters." : "",
+    countryHistory ? "Country history mode: use geography, map-like compositions without labels, landmarks, historic architecture, museums, artifacts, ports, city streets, public memorial spaces, and calm documentary historical reconstruction when useful." : "",
+    countryHistory ? "Country history people strategy: people may appear as crowds or public everyday scenes, but do not invent a hero protagonist. For important public figures, prefer silhouette, podium, museum exhibit, documents, or city-background context to avoid inaccurate portraits." : "",
+    countryHistory ? "Country history safety: avoid dramatic war scenes, blood, propaganda imagery, patriotic marches, wrong flags, readable signs, text labels, and stereotyped regional clichés. Express national identity through geography, architecture, artifacts, color mood, and public spaces." : "",
+    publicBiography ? "Public figure biography mode: use respectful biography documentary visuals such as public stages, schools, laboratories, studies, studios, city context, archival documents, tools, awards, memorial spaces, and symbolic close-ups." : "",
+    publicBiography ? "Public figure award strategy: if the sentence mentions prizes, awards, or recognition, prefer a medal, certificate, archival document, empty podium, quiet hall, or single side-view silhouette. Avoid crowded award ceremonies, dignitary handshakes, exact celebrity faces, and many unrelated people." : "",
+    publicBiography ? "Public figure portrait strategy: avoid demanding an exact real face unless a verified reference is available. Prefer a single consistent public-subject-inspired silhouette, side view, back view, contextual portrait, document, tool, or symbolic environment. Avoid random crowds and unrelated faces." : "",
+    publicBiography ? "Public figure safety: no gossip, paparazzi style, private family scene, invented conversation, celebrity tabloid framing, hero-worship poster, readable biography text, logos, or public figure name written inside the image." : "",
     podcast ? "Podcast mode: show two hosts in a premium podcast studio, microphones, warm desk lighting, topic-related background screen with no readable text." : "",
     !podcast ? "Non-podcast mode: do not show podcast hosts, microphones, headphones, recording studios, radio booths, talk-show desks, presenter setups, or interview lighting unless the exact sentence explicitly requires them." : "",
     "Camera direction: realistic documentary photography, 35mm lens look, subtle depth of field, natural perspective, professional lighting, detailed foreground and background.",
-    "Composition: one clear focal subject, strong visual story action, natural uncluttered bottom area with real scene content, no artificial lower-third panel.",
+    "Composition: one clear focal subject, strong visual story action, natural uncluttered bottom area with visible real scene content. The bottom third must be evenly lit enough to show floor, desk, objects, landscape, or architecture; never leave a blank black band or empty shadow area.",
     "Image quality: high detail, sharp but natural, cinematic color grade, realistic skin/material texture, no black frames, no abstract gradients.",
     "Negative constraints: no text, no readable signs, no subtitles, no logos, no watermark, no black lower-third bar, no placeholder words like Your Text, no slide deck, no cartoon, no flat vector illustration. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment.",
     `Distinctness: make this beat visually different from nearby beats by changing camera angle, distance, subject pose, object focus, or lighting. Beat ${beatIndex + 1}.`
@@ -834,9 +846,35 @@ function buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio = "16
   return parts.filter(Boolean).join(" ");
 }
 
+function buildPublicBiographyImageOverride(section, moment) {
+  const text = `${section?.title || ""} ${section?.visual || ""} ${section?.imagePrompt || ""} ${moment || ""}`.toLowerCase();
+  if (/\b(nobel|prize|award|medal|recognition|ceremony|honou?r)\b/.test(text)) {
+    return [
+      "Respectful symbolic biography still life for an award milestone.",
+      "Show a gold medal-like award object, archival paper, science notebook, glass laboratory vessel, and soft public hall or library background.",
+      "No people, no faces, no handshakes, no crowd, no dignitary, no readable text, no logos.",
+      "Warm balanced lighting with visible desk or floor in the bottom third, documentary realism, calm historical mood."
+    ].join(" ");
+  }
+  return "";
+}
+
 function isPersonFocusedStory(story) {
   return story?.template?.id === "founder-biography"
+    || isPublicFigureBiographyStory(story)
     || /\b(founder|biography|leader|ceo|profile|life of|elon musk|steve jobs|lei jun|bill gates|person)\b/i.test(String(story?.topic || story?.title || ""));
+}
+
+function isPublicFigureBiographyStory(story) {
+  const text = `${story?.topic || ""} ${story?.title || ""} ${story?.template?.id || ""} ${story?.template?.title || ""}`.toLowerCase();
+  return /\bpublic-figure-biography\b|\bpublic figure biography\b|\bbiography of\b|\blife of\b|\bprofile of\b|\bbiography\b/.test(text)
+    || /(人物传记|人物纪录片|传记|生平|一生|个人传记|名人传记)/.test(`${story?.topic || ""} ${story?.title || ""}`);
+}
+
+function isCountryHistoryStory(story) {
+  const text = `${story?.topic || ""} ${story?.title || ""} ${story?.template?.id || ""} ${story?.template?.title || ""}`.toLowerCase();
+  return /\bcountry-history\b|\bcountry history\b|\bnational history\b|\bhistory of (japan|china|egypt|brazil|france|germany|india|italy|spain|turkey|iran|thailand|vietnam|korea|russia|mexico|canada|australia|greece|peru|morocco|indonesia|philippines)\b|\b(japanese|chinese|egyptian|brazilian|french|german|indian|italian|spanish|turkish|iranian|thai|vietnamese|korean|american|russian|mexican|canadian|australian|british|greek) history\b/.test(text)
+    || /(国家历史|国家发展史|某国历史|某国发展史|中国历史|中国发展史|日本历史|日本发展史|法国历史|法国发展史|巴西历史|巴西发展史|埃及历史|埃及发展史|印度历史|印度发展史|美国历史|美国发展史|英国历史|英国发展史|德国历史|德国发展史|俄罗斯历史|俄罗斯发展史|韩国历史|韩国发展史)/.test(`${story?.topic || ""} ${story?.title || ""}`);
 }
 
 const PEOPLE_PATTERN = /\b(person|man|woman|boy|girl|founder|ceo|portrait|face|host|student|team|people|crowd|family|child|worker|doctor|teacher|engineer|artist|scientist|president|leader|hero|character|speaker|presenter|interviewee|passenger|driver|chef|nurse|officer|soldier|king|queen|prince|princess|mother|father|brother|sister|friend|neighbor|stranger|customer|waiter|he |she |his |her |they |them |their |emma|ben|mia|lily)\b/i;
@@ -848,6 +886,28 @@ function hasScenePeople(scene) {
 
 function buildMusicPrompt(story) {
   const visualStyle = story.storyboardDesign?.visualStyle || "warm cinematic beginner English story";
+  if (isCountryHistoryStory(story)) {
+    return [
+      "instrumental background music for a soft country history documentary English shadowing video",
+      `story title: ${story.title}`,
+      "opening mood: calm documentary intro",
+      "middle mood: gentle historical journey with soft rhythm",
+      "ending mood: hopeful reflective close",
+      "warm piano, soft strings, ambient pads, light percussion, optional subtle regional instrument color without stereotypes",
+      "no vocals, no lyrics, no national anthem, no patriotic march, unobtrusive under spoken English narration"
+    ].join(", ");
+  }
+  if (isPublicFigureBiographyStory(story)) {
+    return [
+      "instrumental background music for a respectful public figure biography English shadowing video",
+      `story title: ${story.title}`,
+      "opening mood: reflective documentary intro",
+      "middle mood: gentle personal journey with warm rhythm",
+      "ending mood: warm legacy close",
+      "soft piano, warm strings, light ambient pads, subtle percussion, calm documentary pacing",
+      "no vocals, no lyrics, no fanfare, no anthem, no heroic march, unobtrusive under spoken English narration"
+    ].join(", ");
+  }
   return [
     "instrumental background music for an English shadowing story video",
     `story title: ${story.title}`,

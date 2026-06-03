@@ -64,6 +64,26 @@ const OUTPUT_LABELS = {
 const DEFAULT_TEMPLATE_ID = "company-origin";
 const DRAFT_STORAGE_KEY = "echoenglish:lastDraft";
 
+function isCountryHistoryTopic(topic) {
+  const text = String(topic || "").trim();
+  const english = /\b(country history|national history|history of (japan|china|egypt|brazil|france|germany|india|italy|spain|turkey|iran|thailand|vietnam|korea|russia|mexico|canada|australia|greece|peru|morocco|indonesia|philippines)|(?:japan|china|egypt|brazil|france|germany|india|italy|spain|turkey|iran|thailand|vietnam|korea|russia|mexico|canada|australia|greece|peru|morocco|indonesia|philippines|japanese|chinese|egyptian|brazilian|french|german|indian|italian|spanish|turkish|iranian|thai|vietnamese|korean|american|russian|mexican|canadian|australian|british|greek) (?:country )?history)\b/i;
+  const chinese = /(国家历史|国家发展史|某国历史|某国发展史|中国历史|中国发展史|日本历史|日本发展史|法国历史|法国发展史|巴西历史|巴西发展史|埃及历史|埃及发展史|印度历史|印度发展史|美国历史|美国发展史|英国历史|英国发展史|德国历史|德国发展史|俄罗斯历史|俄罗斯发展史|韩国历史|韩国发展史)/;
+  return english.test(text) || chinese.test(text);
+}
+
+function isPublicFigureBiographyTopic(topic) {
+  const text = String(topic || "").trim();
+  const english = /\b(biography of|life of|profile of|biography|personal biography|public figure biography|historical figure biography)\b/i;
+  const chinese = /(人物传记|人物纪录片|传记|生平|一生|个人传记|名人传记)/;
+  return english.test(text) || chinese.test(text);
+}
+
+function isFounderBiographyTopic(topic) {
+  const text = String(topic || "").trim();
+  return /\b(founder|co-founder|startup founder|entrepreneur|ceo|business leader|company founder)\b/i.test(text)
+    || /(创始人|联合创始人|企业家|公司创办人|CEO|首席执行官)/i.test(text);
+}
+
 function App() {
   const [route, setRoute] = useState(() => normalizeRoute(window.location.pathname));
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search));
@@ -604,7 +624,18 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
             Story Topic
             <input
               value={form.topic}
-              onChange={(event) => setForm({ ...form, topic: event.target.value })}
+              onChange={(event) => {
+                const topic = event.target.value;
+                const hasCountryTemplate = templates.some((template) => template.id === "country-history");
+                const hasPublicBiographyTemplate = templates.some((template) => template.id === "public-figure-biography");
+                const shouldAutoSelectCountry = hasCountryTemplate && isCountryHistoryTopic(topic) && (!form.templateId || form.templateId === DEFAULT_TEMPLATE_ID);
+                const shouldAutoSelectBiography = hasPublicBiographyTemplate && isPublicFigureBiographyTopic(topic) && !isFounderBiographyTopic(topic) && (!form.templateId || form.templateId === DEFAULT_TEMPLATE_ID);
+                setForm({
+                  ...form,
+                  topic,
+                  templateId: shouldAutoSelectCountry ? "country-history" : shouldAutoSelectBiography ? "public-figure-biography" : form.templateId
+                });
+              }}
               placeholder="Example: A Rainy Day in London"
             />
           </label>

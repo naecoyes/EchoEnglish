@@ -60,7 +60,9 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
   if (!config.apiKey) {
     throw new Error("LLM API key is required for story overview generation. Open Settings and save an LLM API key.");
   }
-  const factualMode = isFactualTemplate(template) || isFactualHistoryTopic(topic);
+  const countryHistoryMode = isCountryHistoryTemplate(template) || isCountryHistoryTopic(topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(template) || isPublicFigureBiographyTopic(topic);
+  const factualMode = countryHistoryMode || publicBiographyMode || isFactualTemplate(template) || isFactualHistoryTopic(topic);
 
   const prompt = [
     "Create a story plan for an English learning story video.",
@@ -90,13 +92,25 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
     "IMPORTANT: Determine the optimal structure based on the topic:",
     "- Complex topics with many milestones: use more scenes (20-30) with fewer sentences each (3-4)",
     "- Simple narrative topics: use fewer scenes (15-20) with more sentences each (4-6)",
-    "- Rich historical topics: use more images (3-4 per minute) for visual variety",
+    "- Rich historical topics: use 2-3 images per minute for visual variety without visual overload",
+    countryHistoryMode ? "- Country history documentaries should use 18-24 scenes, 3-4 sentences per scene, and 30-40 total image beats." : "",
+    countryHistoryMode ? "- Country history structure: ancient origins, geography, early civilization, key dynasties/kingdoms/periods, outside influences, independence or modern state, culture/economy today, and peaceful recap." : "",
+    countryHistoryMode ? "- Country history tone: soft educational overview. Avoid heavy conflict detail, graphic war scenes, patriotic slogans, and political judgment." : "",
+    publicBiographyMode ? "- Public figure biographies should use 18-22 scenes, 3-4 sentences per scene, and 30-40 total image beats." : "",
+    publicBiographyMode ? "- Public figure biography structure: early life, education or influences, first turning point, main work and achievements, setbacks or challenges, public impact, legacy, and calm recap." : "",
+    publicBiographyMode ? "- Public figure biography tone: respectful, neutral, educational. Avoid hero worship, gossip, political judgment, unsupported private emotions, and invented conversations." : "",
     "- Keep the total duration around the target minutes when read slowly with pauses",
     "Keep the plan simple, emotional, visual, and suitable for beginner English learners.",
     "Use the web search context when the topic involves real people, companies, places, history, news, or culture.",
     "Do not invent factual claims that conflict with the search context.",
     factualMode
       ? "For factual documentary mode: do not invent a fictional protagonist, fictional employee, fictional dialogue, or private scene. Use real dates, named public people or organizations from the sources, and a clear chronological timeline. The storyBeats must be factual milestones, not imagined workshop drama."
+      : "",
+    countryHistoryMode
+      ? "For country history mode: do not create a fictional hero, tourist narrator, private family scene, or invented conversation. Use public facts from the search context and explain large events with simple English."
+      : "",
+    publicBiographyMode
+      ? "For public figure biography mode: use only public biography facts from the search context. Do not invent private conversations, family scenes, gossip, or inner thoughts."
       : "",
     `Web search context:\n${formatSearchContext(searchContext)}`
   ].filter(Boolean).join("\n");
@@ -114,19 +128,24 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
     throw new Error("A current story draft is required before revision.");
   }
 
-  const factualMode = isFactualTemplate(template) || draft.contentMode === "factual-documentary" || draft.outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
+  const countryHistoryMode = isCountryHistoryTemplate(template || draft.template || draft.outline?.template) || isCountryHistoryTopic(topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(template || draft.template || draft.outline?.template) || isPublicFigureBiographyTopic(topic);
+  const factualMode = countryHistoryMode || publicBiographyMode || isFactualTemplate(template) || draft.contentMode === "factual-documentary" || draft.outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
   const prompt = [
     "Revise this English learning video story draft according to the user's feedback.",
     "Return the complete revised source JSON, not a patch.",
     template ? formatTemplateForPrompt(template) : "",
     "Hard requirements:",
     "- Target exactly 15 minutes.",
-    "- Use 16-24 internal scenes.",
-    "- Each scene has exactly 4 English sentences.",
-    "- Use 30-45 total background image beats, about 2-3 images per minute.",
-    "- Each scene should normally have 1 imageBeat covering all 4 sentences. Use 2 imageBeats only when the story clearly changes location, action, or speaker focus inside that scene.",
-    "- Keep beginner English, Chinese sentence translations, 3 vocabulary notes, imageBeats, and photorealistic image prompts.",
+    countryHistoryMode ? "- Use 18-24 internal scenes for the ancient-to-modern country overview." : publicBiographyMode ? "- Use 18-22 internal scenes for the public figure biography." : "- Use 16-24 internal scenes.",
+    countryHistoryMode || publicBiographyMode ? "- Each scene has 3-4 English sentences." : "- Each scene has exactly 4 English sentences.",
+    countryHistoryMode || publicBiographyMode ? "- Use 30-40 total background image beats, about 2-3 images per minute." : "- Use 30-45 total background image beats, about 2-3 images per minute.",
+    countryHistoryMode ? "- Each scene should normally have 1 imageBeat covering the full scene. Use 2 imageBeats only when the story clearly changes period, place, object, or public setting." : publicBiographyMode ? "- Each scene should normally have 1 imageBeat covering the full scene. Use 2 imageBeats only when the biography clearly changes place, time period, public role, or symbolic object." : "- Each scene should normally have 1 imageBeat covering all 4 sentences. Use 2 imageBeats only when the story clearly changes location, action, or speaker focus inside that scene.",
+    "- Keep beginner English, Chinese sentence translations, exactly 3 valid vocabulary notes per scene, imageBeats, and photorealistic image prompts.",
+    "- Each vocabulary note must be [\"word or phrase\", \"中文释义\", \"/IPA/\"] with all fields non-empty.",
     factualMode ? "- Factual documentary mode: do not invent fictional protagonists, employees, dialogue, or unsupported private scenes." : "",
+    countryHistoryMode ? "- Country history mode: keep a soft overview from ancient origins to modern culture and economy. Avoid political judgment, heavy battle detail, propaganda, or fictional private scenes." : "",
+    publicBiographyMode ? "- Public figure biography mode: keep a respectful neutral timeline. Avoid hero worship, gossip, unsupported private emotions, private family drama, or invented dialogue." : "",
     `Topic: ${topic}`,
     `User feedback:\n${cleanText(feedback) || "Improve clarity and accuracy."}`,
     `Current draft JSON:\n${JSON.stringify(draft)}`
@@ -145,13 +164,15 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
 }
 
 function buildStoryPrompt(topic, minutes, outline, template = null) {
-  const factualMode = isFactualTemplate(template) || outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
+  const countryHistoryMode = isCountryHistoryTemplate(template || outline?.template) || isCountryHistoryTopic(topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(template || outline?.template) || isPublicFigureBiographyTopic(topic);
+  const factualMode = countryHistoryMode || publicBiographyMode || isFactualTemplate(template) || outline?.contentMode === "factual-documentary" || isFactualHistoryTopic(topic);
   const podcastMode = template?.id === "podcast-dialogue";
 
   // Get model-determined parameters from outline
-  const targetScenes = outline?.targetScenes || Math.max(12, Math.round(minutes * 1.1));
+  const targetScenes = outline?.targetScenes || (countryHistoryMode ? 20 : publicBiographyMode ? 20 : Math.max(12, Math.round(minutes * 1.1)));
   const sentencesPerScene = outline?.sentencesPerScene || 4;
-  const targetImages = outline?.targetImages || Math.round(minutes * 2.5);
+  const targetImages = outline?.targetImages || (countryHistoryMode || publicBiographyMode ? Math.min(40, Math.max(30, Math.round(minutes * 2.5))) : Math.round(minutes * 2.5));
 
   return [
     podcastMode
@@ -168,19 +189,58 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     podcastMode
       ? `- For podcast mode, every scene still has exactly ${sentencesPerScene} sentences. Use varied turn patterns such as A,A,B,B or A,B,B,A when it sounds natural.`
       : "",
-    `- Use ${targetScenes} internal scenes. Each scene has exactly ${sentencesPerScene} English sentences.`,
+    countryHistoryMode
+      ? `- Use ${targetScenes} internal scenes. Each scene has 3-4 English sentences.`
+      : publicBiographyMode
+      ? `- Use ${targetScenes} internal scenes. Each scene has 3-4 English sentences.`
+      : `- Use ${targetScenes} internal scenes. Each scene has exactly ${sentencesPerScene} English sentences.`,
     `- The story should naturally last about ${minutes} minutes when read slowly with short pauses.`,
     `- The video should use ${targetImages} total background image beats. Do not create one image per sentence.`,
     "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all sentences; use two only for major visual changes.",
     "- Let the model decide image beat timing from the story flow by assigning sentenceStart and sentenceEnd for each imageBeat.",
-    "- Every scene needs complete Chinese sentence translations, 3 useful vocabulary notes with IPA phonetics, and a concise photorealistic image prompt.",
+    "- Every scene must have complete Chinese sentence translations, exactly 3 useful vocabulary notes, IPA phonetics, and a concise photorealistic image prompt.",
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
-    "- Vocabulary notes must not repeat across scenes. Avoid very easy words such as good, make, see, time, first, small, work, or help. Prefer useful B1/domain words such as launch, milestone, reusable, orbit, satellite, investment, strategy, production, challenge, founder.",
+    "- Vocabulary notes must use this exact structure: [\"word or phrase\", \"中文释义\", \"/IPA/\"]. All three fields must be non-empty. Each scene must include 3 valid entries, not 1 or 2.",
+    "- Vocabulary notes must not repeat across scenes. Choose words or short phrases that appear in that scene's English sentences whenever possible. Avoid very easy words such as good, make, see, time, first, small, work, or help.",
+    "- Prefer useful B1/domain words. For public biographies, prefer words such as ambition, discipline, breakthrough, legacy, contribution, challenge, influence, achievement, resilience, mentor, reform, innovation.",
     "- Image prompts must be camera-ready prompts: subject, location, action, foreground/background, lighting, lens or camera feel, color mood, and a clear composition with a natural, uncluttered bottom area.",
     "- Image prompts must look like realistic documentary photography or cinematic production stills. No cartoon, no flat illustration, no PPT slide, no text, no subtitles, no logo, no black lower-third bar, no placeholder words like Your Text. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment, not mockups or slides.",
     "- Avoid repeated generic wording. Each scene prompt must have a distinct place, object, camera angle, or action.",
     isPersonFocusedTopic(topic, template)
       ? "- Person-focused mode: keep the same public subject visually consistent. Prefer one-person portraits, public-stage photos, offices, documents, symbolic objects, and context shots. Do not generate multiple unrelated faces or group portraits unless the facts require a public group scene."
+      : "",
+    publicBiographyMode
+      ? "- Public figure biography mode: do not invent fictional scenes, private conversations, gossip, unsupported emotions, or private family drama. Use public facts from the outline/search context."
+      : "",
+    publicBiographyMode
+      ? "- Public figure biography structure must move from early life, education or influences, first turning point, main work and achievements, setbacks or challenges, public impact, legacy, and a calm recap."
+      : "",
+    publicBiographyMode
+      ? "- Public figure biography tone: respectful, neutral, educational documentary. Avoid hero worship, partisan judgment, sensational claims, and celebrity gossip."
+      : "",
+    publicBiographyMode
+      ? "- Public figure biography image prompts: mix public stage scenes, schools, laboratories, studies, studios, city context, archival documents, tools, awards, memorial spaces, and symbolic close-ups."
+      : "",
+    publicBiographyMode
+      ? "- For awards or ceremonies, prefer symbolic visuals such as a medal on a desk, an empty podium, archival documents, a side-view silhouette, or a quiet public hall. Avoid crowded award stages, dignitary handshakes, exact celebrity faces, and many unrelated people."
+      : "",
+    publicBiographyMode
+      ? "- Public figure visual safety: if no reference image is provided, avoid demanding an exact face. Prefer single-person silhouettes, side views, back views, public-context portraits, documents, tools, and symbolic environments. No podcast hosts, microphones, embedded text, logos, paparazzi style, or Your Text."
+      : "",
+    countryHistoryMode
+      ? "- Country history mode: do not create fictional protagonists, fictional dialogue, private scenes, or tourist storylines. Use only public facts from the outline/search context."
+      : "",
+    countryHistoryMode
+      ? "- Country history structure must move from geography and ancient origins to early civilization, key kingdoms/dynasties/periods, outside influences, independence or modern state formation, culture/economy today, and a peaceful recap."
+      : "",
+    countryHistoryMode
+      ? "- Country history tone: soft educational documentary. Explain large events briefly in beginner English, avoid dense war detail, graphic violence, patriotic slogans, and political judgment."
+      : "",
+    countryHistoryMode
+      ? "- Country history image prompts: mix maps without text labels, landmarks, historic architecture, museums, artifacts, ports, city streets, and public memorial spaces. Use documentary-style historical reconstruction only when needed."
+      : "",
+    countryHistoryMode
+      ? "- Country history visual safety: no podcast hosts, studios, microphones, fictional heroes, wrong flags, readable signs, propaganda posters, embedded labels, or Your Text. Use geography, architecture, colors, artifacts, and public spaces to express national identity."
       : "",
     factualMode
       ? "- Factual documentary mode is required. Do not create fictional protagonists, invented employees, invented dialogue, private emotions, or scenes that are not supported by the outline/search context."
@@ -199,7 +259,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "coverImagePrompt": "A 45-70 word creative seed for the video cover image. Describe the strongest visual hook, subject, mood, and setting. Do not request embedded text, signs, logos, subtitles, typography, or placeholder words.",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
     '  "sections": [',
-    `    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": ${sentencesPerScene - 1}, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase", "中文释义", "/IPA/"]]}`,
+    `    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": ${sentencesPerScene - 1}, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase 1", "中文释义", "/IPA/"], ["word or phrase 2", "中文释义", "/IPA/"], ["word or phrase 3", "中文释义", "/IPA/"]]}`,
     "  ]",
     "}",
     `Topic: ${topic}`,
@@ -315,13 +375,18 @@ function parseJsonText(text) {
 
 function normalizeOutline(input, topic, minutes, source = "local", searchContext = null, template = null) {
   const fallback = fallbackOutline(topic, minutes, template);
+  const countryHistoryMode = isCountryHistoryTemplate(template || input?.template) || isCountryHistoryTopic(topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(template || input?.template) || isPublicFigureBiographyTopic(topic);
   const title = cleanText(input?.title) || fallback.title;
   const beats = normalizeStringArray(input?.storyBeats, fallback.storyBeats);
 
   // Use model-determined values or defaults
-  const targetScenes = Number(input?.targetScenes) || Math.max(12, Math.round(minutes * 1.1));
-  const sentencesPerScene = Number(input?.sentencesPerScene) || 4;
-  const targetImages = Number(input?.targetImages) || Math.round(minutes * 2.5);
+  const rawTargetScenes = Number(input?.targetScenes) || (countryHistoryMode || publicBiographyMode ? 20 : Math.max(12, Math.round(minutes * 1.1)));
+  const rawSentencesPerScene = Number(input?.sentencesPerScene) || 4;
+  const rawTargetImages = Number(input?.targetImages) || Math.round(minutes * 2.5);
+  const targetScenes = countryHistoryMode ? clampInteger(rawTargetScenes, 18, 24) : publicBiographyMode ? clampInteger(rawTargetScenes, 18, 22) : rawTargetScenes;
+  const sentencesPerScene = countryHistoryMode || publicBiographyMode ? clampInteger(rawSentencesPerScene, 3, 4) : rawSentencesPerScene;
+  const targetImages = countryHistoryMode || publicBiographyMode ? clampInteger(rawTargetImages, 30, 40) : rawTargetImages;
 
   return {
     title,
@@ -359,7 +424,9 @@ function normalizeStory(input, context) {
   const generationWarnings = [];
   const targetScenes = outline.targetScenes || Math.max(12, Math.round((context.targetDurationMinutes || 15) * 1.1));
   const targetImages = outline.targetImages || Math.round((context.targetDurationMinutes || 15) * 2.5);
-  const minimumScenes = Math.min(12, Math.max(8, targetScenes - 4));
+  const countryHistoryMode = isCountryHistoryTemplate(outline.template || context.template) || isCountryHistoryTopic(context.topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(outline.template || context.template) || isPublicFigureBiographyTopic(context.topic);
+  const minimumScenes = countryHistoryMode || publicBiographyMode ? 18 : Math.min(12, Math.max(8, targetScenes - 4));
 
   // Require enough non-boilerplate scenes. Failing here is better than producing a video
   // whose final minutes repeat generic filler sentences.
@@ -746,19 +813,49 @@ function fallbackFactualScene(outline, beat, nextBeat, index) {
 
 function fallbackOutline(topic, minutes, template = null) {
   const title = titleCase(topic || "A Quiet Story");
-  const factualMode = isFactualTemplate(template) || isFactualHistoryTopic(topic);
+  const countryHistoryMode = isCountryHistoryTemplate(template) || isCountryHistoryTopic(topic);
+  const publicBiographyMode = isPublicFigureBiographyTemplate(template) || isPublicFigureBiographyTopic(topic);
+  const factualMode = countryHistoryMode || publicBiographyMode || isFactualTemplate(template) || isFactualHistoryTopic(topic);
+  const countryHistoryBeats = [
+    "Introduce the country with its geography, landscape, and position on the map.",
+    "Explain the ancient origins and the earliest known communities in simple terms.",
+    "Describe how early civilization grew through farming, rivers, coastlines, trade, or cities.",
+    "Show one or two important kingdoms, dynasties, empires, or historical periods.",
+    "Explain how outside influences, trade routes, migrations, or neighbors shaped the country.",
+    "Describe a major cultural heritage moment through architecture, language, art, or belief.",
+    "Explain the path toward independence, modern state formation, or major reform with neutral language.",
+    "Show how cities, education, culture, and the economy developed in modern times.",
+    "Describe the country today through public life, heritage, identity, and peaceful everyday scenes.",
+    "Close with a calm recap of how history shaped the country's modern identity."
+  ];
+  const publicBiographyBeats = [
+    "Introduce the public figure and explain why their life still matters.",
+    "Describe early life and the environment that shaped their first interests.",
+    "Explain education, mentors, influences, or early practice in simple terms.",
+    "Show the first turning point when their path became clearer.",
+    "Describe the main work, craft, research, leadership, or public contribution.",
+    "Explain one major breakthrough, achievement, publication, performance, or decision.",
+    "Describe a challenge or setback with neutral respectful language.",
+    "Show how the person continued working, learning, or changing direction.",
+    "Explain the wider public impact of their work or choices.",
+    "Close with their legacy and a calm recap for English learners."
+  ];
   return {
     title,
-    genre: factualMode ? "factual documentary history" : cleanText(template?.title) || "cinematic slice-of-life story",
+    genre: countryHistoryMode ? "soft country history documentary" : publicBiographyMode ? "public figure biography documentary" : factualMode ? "factual documentary history" : cleanText(template?.title) || "cinematic slice-of-life story",
     level: "beginner",
     contentMode: factualMode ? "factual-documentary" : "fictional-story",
-    summary: factualMode
+    summary: countryHistoryMode
+      ? `${title} is told as a soft ancient-to-modern country history overview for English learners. It focuses on geography, civilization, public milestones, culture, economy, and modern identity.`
+      : publicBiographyMode
+      ? `${title} is told as a respectful factual public biography for English learners. It focuses on public facts, turning points, achievements, challenges, impact, and legacy.`
+      : factualMode
       ? `${title} is told as a simple factual documentary timeline for English learners. It focuses on public milestones, dates, decisions, products, and outcomes.`
       : `${title} follows one clear character through a simple problem, a meaningful choice, and a calm ending. The story is written for English learners who need natural, easy sentences.`,
-    mainCharacter: factualMode ? "The company and its public leadership" : "Emma",
-    setting: factualMode ? "public events, offices, factories, and launch stages" : chooseSetting(title),
+    mainCharacter: countryHistoryMode ? "The country, its people, public places, and historical record" : publicBiographyMode ? "The public figure and their documented public life" : factualMode ? "The company and its public leadership" : "Emma",
+    setting: countryHistoryMode ? "geography, ancient sites, museums, landmarks, public streets, ports, and modern cities" : publicBiographyMode ? "public stages, schools, workplaces, documents, city context, symbolic objects, and memorial spaces" : factualMode ? "public events, offices, factories, and launch stages" : chooseSetting(title),
     visualStyle: cleanText(template?.visualStyle) || "photorealistic cinematic still photo, natural light, realistic people, clear story emotion",
-    storyBeats: factualMode ? [
+    storyBeats: countryHistoryMode ? countryHistoryBeats : publicBiographyMode ? publicBiographyBeats : factualMode ? [
       "The founders meet and discover a shared vision for innovation.",
       "They work in a small garage or office, building the first prototype.",
       "The team faces early technical challenges and solves them creatively.",
@@ -787,20 +884,64 @@ function fallbackOutline(topic, minutes, template = null) {
     ],
     vocabularyFocus: Array.isArray(template?.vocabularyFocus) ? template.vocabularyFocus : ["notice", "carefully", "choice", "clue", "quiet", "remember", "helpful", "change", "answer", "meaning"],
     targetMinutes: Number(minutes || 15),
+    targetScenes: countryHistoryMode || publicBiographyMode ? 20 : undefined,
+    sentencesPerScene: countryHistoryMode || publicBiographyMode ? 4 : undefined,
+    targetImages: countryHistoryMode || publicBiographyMode ? Math.min(40, Math.max(30, Math.round(Number(minutes || 15) * 2.5))) : undefined,
     source: "local"
   };
 }
 
 function isFactualHistoryTopic(topic) {
-  return /\b(history|development|timeline|startup|company|founder|founded|launch|launched|auto|automobile|car|ev|xiaomi|tesla|apple|microsoft|google|huawei|byd|nio|xpeng)\b/i.test(String(topic || ""));
+  return isCountryHistoryTopic(topic) || isPublicFigureBiographyTopic(topic) || /\b(history|development|timeline|startup|company|founder|founded|launch|launched|auto|automobile|car|ev|xiaomi|tesla|apple|microsoft|google|huawei|byd|nio|xpeng)\b/i.test(String(topic || ""));
 }
 
 function isFactualTemplate(template) {
   return cleanText(template?.contentMode) === "factual-documentary";
 }
 
+function isCountryHistoryTemplate(template) {
+  return cleanText(template?.id) === "country-history" || /\bcountry history documentary\b/i.test(cleanText(template?.title));
+}
+
+function isPublicFigureBiographyTemplate(template) {
+  return cleanText(template?.id) === "public-figure-biography" || /\bpublic figure biography\b/i.test(cleanText(template?.title));
+}
+
+function isCountryHistoryTopic(topic) {
+  const text = String(topic || "").trim();
+  const countryNames = [
+    "japan", "china", "egypt", "brazil", "france", "germany", "india", "italy", "spain", "turkey", "iran", "thailand", "vietnam",
+    "korea", "south korea", "united states", "america", "russia", "mexico", "canada", "australia", "britain", "united kingdom",
+    "england", "greece", "peru", "morocco", "saudi arabia", "uae", "indonesia", "philippines", "malaysia", "singapore"
+  ];
+  const adjectives = [
+    "japanese", "chinese", "egyptian", "brazilian", "french", "german", "indian", "italian", "spanish", "turkish", "iranian",
+    "thai", "vietnamese", "korean", "american", "russian", "mexican", "canadian", "australian", "british", "greek", "peruvian"
+  ];
+  const names = countryNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const descriptors = adjectives.join("|");
+  const englishPattern = new RegExp(`\\b(country history|national history|history of (?:${names})|(?:${names}|${descriptors}) (?:country )?history|(?:${names}) development history)\\b`, "i");
+  const chinesePattern = /(国家历史|国家发展史|某国历史|某国发展史|中国历史|中国发展史|日本历史|日本发展史|法国历史|法国发展史|巴西历史|巴西发展史|埃及历史|埃及发展史|印度历史|印度发展史|美国历史|美国发展史|英国历史|英国发展史|德国历史|德国发展史|俄罗斯历史|俄罗斯发展史|韩国历史|韩国发展史|意大利历史|意大利发展史|西班牙历史|西班牙发展史|土耳其历史|土耳其发展史|越南历史|越南发展史|泰国历史|泰国发展史)/;
+  return englishPattern.test(text) || chinesePattern.test(text);
+}
+
+function isPublicFigureBiographyTopic(topic) {
+  const text = String(topic || "").trim();
+  return /\b(biography of|life of|profile of|biography|personal biography|public figure biography|historical figure biography)\b/i.test(text)
+    || /(人物传记|人物纪录片|传记|生平|一生|个人传记|名人传记)/.test(text);
+}
+
+function isStrictVocabularyTemplate(template, topic) {
+  return isCountryHistoryTemplate(template)
+    || isCountryHistoryTopic(topic)
+    || isPublicFigureBiographyTemplate(template)
+    || isPublicFigureBiographyTopic(topic);
+}
+
 function isPersonFocusedTopic(topic, template) {
   return template?.id === "founder-biography"
+    || isPublicFigureBiographyTemplate(template)
+    || isPublicFigureBiographyTopic(topic)
     || /\b(founder|biography|leader|ceo|profile|life of|elon musk|steve jobs|lei jun|bill gates|person)\b/i.test(String(topic || ""));
 }
 
@@ -832,7 +973,7 @@ function buildPhotoPrompt(storyTitle, visual, sentences = []) {
     sentences.length ? `Moment: ${sentences.slice(0, 3).join(" ")}` : "",
     "Shot direction: one clear main subject, believable real-world location, visible story object, natural human scale, documentary realism.",
     "Camera: 35mm or 50mm lens look, cinematic depth of field, high dynamic range, realistic texture, no oversaturated fantasy colors.",
-    "Composition: strong upper and middle frame detail, natural uncluttered bottom area, no artificial lower-third panel or text banner.",
+    "Composition: strong upper and middle frame detail, natural uncluttered bottom area with visible floor, desk, objects, landscape, or architecture; no artificial lower-third panel, no blank black band, and no text banner.",
     "Lighting: natural or motivated cinematic light, soft contrast, realistic shadows, professional production still quality.",
     "No text, no subtitles, no captions, no watermark, no logo, no black lower-third bar, no placeholder words like Your Text, no cartoon, no flat vector art, no slide design. Product interfaces (websites, apps, software screens) are allowed when the story topic requires them, but they must look like real screenshots in a natural environment."
   ].filter(Boolean).join(" ");
@@ -1003,13 +1144,17 @@ async function createPureStory({ topic, targetDurationMinutes, level, annotation
       });
 
       const localIssues = findStoryQualityIssues(story, {
-        minimumSections: Math.min(12, Math.max(8, Number(story.outline?.targetScenes || 16) - 4))
+        minimumSections: Math.min(12, Math.max(8, Number(story.outline?.targetScenes || 16) - 4)),
+        minimumVocabularyNotes: isStrictVocabularyTemplate(story.outline?.template || template, topic) ? 3 : 2
       });
       if (localIssues.length) {
+        const vocabularyIssue = localIssues.some((issue) => /vocabulary/i.test(issue));
         validation = {
           valid: false,
           issues: localIssues,
-          suggestions: ["Rewrite the ending with specific, non-repeated story beats."],
+          suggestions: vocabularyIssue
+            ? ["Every scene must include exactly 3 non-empty vocabulary entries with word, Chinese meaning, and IPA."]
+            : ["Rewrite the ending with specific, non-repeated story beats."],
           sceneCount: story.sections?.length || 0,
           totalSentences: countStorySentences(story),
           qualityScore: 0

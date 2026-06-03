@@ -29,6 +29,7 @@ function inspectStoryQuality(story, options = {}) {
   const issues = [];
   const warnings = [];
   const minimumSections = Number(options.minimumSections || 0);
+  const minimumVocabularyNotes = Number(options.minimumVocabularyNotes || 2);
   const requireTranslations = options.requireTranslations !== false;
   const requireVocabulary = options.requireVocabulary !== false;
   const repeated = findRepeatedSentences(sections);
@@ -82,7 +83,7 @@ function inspectStoryQuality(story, options = {}) {
 
     if (requireVocabulary) {
       const meaningfulVocabulary = vocabulary.filter(vocabularyEntryIsUseful);
-      if (meaningfulVocabulary.length < 2) {
+      if (meaningfulVocabulary.length < minimumVocabularyNotes) {
         missingVocabulary.push({
           scene: sectionIndex + 1,
           title: section.title || `Scene ${sectionIndex + 1}`,
