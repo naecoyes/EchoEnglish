@@ -24,7 +24,7 @@ async function inspectImage(filePath) {
     stats.topTwoThirds.meanLuma > 20
     && (
       (stats.bottomThird.meanLuma < 7 && stats.bottomThird.lumaStdDev < 5)
-      || (stats.bottomThird.meanLuma < 18 && stats.bottomThird.darkRatio > 0.74)
+      || (stats.bottomThird.meanLuma < 12 && stats.bottomThird.darkRatio > 0.86 && stats.bottomThird.lumaStdDev < 10)
     )
   ) {
     warnings.push("Image appears to contain a blank black lower-third panel.");

@@ -35,7 +35,7 @@ function renderYoutubeCoverContent(story, { W, H }) {
   const brandY = 50;
   const titleFont = titleLines.length > 2 ? 46 : 52;
   const titleLineHeight = Math.round(titleFont * 1.18);
-  const titleStartY = 112;
+  const titleStartY = 134;
   const titleBlock = titleLines.map((line, index) => centeredTextLine(line, cx, titleStartY + index * titleLineHeight, titleFont, 900, "#ffffff", 0, true)).join("");
   const playY = Math.max(318, titleStartY + titleLines.length * titleLineHeight + 96);
   const playR = 78;
@@ -46,8 +46,8 @@ function renderYoutubeCoverContent(story, { W, H }) {
   return `
     <rect width="${W}" height="${H}" fill="#020817" opacity="0.58"/>
     <rect width="${W}" height="${H}" fill="url(#centerVignette)"/>
-    <rect x="${cx - 74}" y="${brandY - 20}" width="148" height="34" rx="17" fill="#0ea5e9" opacity="0.96"/>
-    ${centeredTextLine("ECHOENGLISH", cx, brandY + 3, 14, 900, "#ffffff", 5, false)}
+    <rect x="${cx - 108}" y="${brandY - 20}" width="216" height="34" rx="17" fill="#0ea5e9" opacity="0.96"/>
+    ${centeredTextLine("ECHOENGLISH", cx, brandY + 3, 14, 900, "#ffffff", 3.5, false)}
     ${titleBlock}
     <circle cx="${cx}" cy="${playY}" r="${playR}" fill="#0ea5e9" opacity="0.94" filter="url(#shadow)"/>
     <path d="M${cx - 26} ${playY - 42} L${cx - 26} ${playY + 42} L${cx + 42} ${playY} Z" fill="#ffffff"/>

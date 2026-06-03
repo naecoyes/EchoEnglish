@@ -197,11 +197,12 @@ async function generateStoryWorkflow(options = {}) {
     return nextScriptJson;
   });
 
+  const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
+
   if (options.imageMode === "minimax" || options.imageMode === "google" || options.coverImageMode === "minimax" || options.coverImageMode === "google") {
     await runStage(options, "images", async () => {
     let totalCompleted = 0;
     let totalScenes = 0;
-    const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
 
     // 1. Generate dedicated cover images. Covers are separate from story beat images.
     const coverResults = await generateCoverImages({
