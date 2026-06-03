@@ -93,10 +93,10 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
     "- Complex topics with many milestones: use more scenes (20-30) with fewer sentences each (3-4)",
     "- Simple narrative topics: use fewer scenes (15-20) with more sentences each (4-6)",
     "- Rich historical topics: use 2-3 images per minute for visual variety without visual overload",
-    countryHistoryMode ? "- Country history documentaries should use 18-24 scenes, 3-4 sentences per scene, and 30-40 total image beats." : "",
+    countryHistoryMode ? "- Country history documentaries should target 12-15 minutes. Use 34-44 scenes, 4-5 sentences per scene, and 38-50 total image beats." : "",
     countryHistoryMode ? "- Country history structure: ancient origins, geography, early civilization, key dynasties/kingdoms/periods, outside influences, independence or modern state, culture/economy today, and peaceful recap." : "",
     countryHistoryMode ? "- Country history tone: soft educational overview. Avoid heavy conflict detail, graphic war scenes, patriotic slogans, and political judgment." : "",
-    publicBiographyMode ? "- Public figure biographies should use 18-22 scenes, 3-4 sentences per scene, and 30-40 total image beats." : "",
+    publicBiographyMode ? "- Public figure biographies should target 12-15 minutes. Use 34-44 scenes, 4-5 sentences per scene, and 38-50 total image beats." : "",
     publicBiographyMode ? "- Public figure biography structure: early life, education or influences, first turning point, main work and achievements, setbacks or challenges, public impact, legacy, and calm recap." : "",
     publicBiographyMode ? "- Public figure biography tone: respectful, neutral, educational. Avoid hero worship, gossip, political judgment, unsupported private emotions, and invented conversations." : "",
     "- Keep the total duration around the target minutes when read slowly with pauses",
@@ -136,10 +136,10 @@ async function reviseStoryDraft({ topic, targetDurationMinutes, draft, feedback,
     "Return the complete revised source JSON, not a patch.",
     template ? formatTemplateForPrompt(template) : "",
     "Hard requirements:",
-    "- Target exactly 15 minutes.",
-    countryHistoryMode ? "- Use 18-24 internal scenes for the ancient-to-modern country overview." : publicBiographyMode ? "- Use 18-22 internal scenes for the public figure biography." : "- Use 16-24 internal scenes.",
-    countryHistoryMode || publicBiographyMode ? "- Each scene has 3-4 English sentences." : "- Each scene has exactly 4 English sentences.",
-    countryHistoryMode || publicBiographyMode ? "- Use 30-40 total background image beats, about 2-3 images per minute." : "- Use 30-45 total background image beats, about 2-3 images per minute.",
+    "- Target 12-15 minutes of natural read-aloud time.",
+    countryHistoryMode ? "- Use 34-44 internal scenes for the ancient-to-modern country overview." : publicBiographyMode ? "- Use 34-44 internal scenes for the public figure biography." : "- Use 16-24 internal scenes.",
+    countryHistoryMode || publicBiographyMode ? "- Each scene has 4-5 English sentences." : "- Each scene has exactly 4 English sentences.",
+    countryHistoryMode || publicBiographyMode ? "- Use 38-50 total background image beats, about 3 images per minute." : "- Use 30-45 total background image beats, about 2-3 images per minute.",
     countryHistoryMode ? "- Each scene should normally have 1 imageBeat covering the full scene. Use 2 imageBeats only when the story clearly changes period, place, object, or public setting." : publicBiographyMode ? "- Each scene should normally have 1 imageBeat covering the full scene. Use 2 imageBeats only when the biography clearly changes place, time period, public role, or symbolic object." : "- Each scene should normally have 1 imageBeat covering all 4 sentences. Use 2 imageBeats only when the story clearly changes location, action, or speaker focus inside that scene.",
     "- Keep beginner English, Chinese sentence translations, exactly 3 valid vocabulary notes per scene, imageBeats, and photorealistic image prompts.",
     "- Each vocabulary note must be [\"word or phrase\", \"中文释义\", \"/IPA/\"] with all fields non-empty.",
@@ -170,7 +170,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
   const podcastMode = template?.id === "podcast-dialogue";
 
   // Get model-determined parameters from outline
-  const targetScenes = outline?.targetScenes || (countryHistoryMode ? 20 : publicBiographyMode ? 20 : Math.max(12, Math.round(minutes * 1.1)));
+  const targetScenes = outline?.targetScenes || (countryHistoryMode ? 38 : publicBiographyMode ? 38 : Math.max(12, Math.round(minutes * 1.1)));
   const sentencesPerScene = outline?.sentencesPerScene || 4;
   const targetImages = outline?.targetImages || (countryHistoryMode || publicBiographyMode ? Math.min(40, Math.max(30, Math.round(minutes * 2.5))) : Math.round(minutes * 2.5));
 
@@ -384,9 +384,9 @@ function normalizeOutline(input, topic, minutes, source = "local", searchContext
   const rawTargetScenes = Number(input?.targetScenes) || (countryHistoryMode || publicBiographyMode ? 20 : Math.max(12, Math.round(minutes * 1.1)));
   const rawSentencesPerScene = Number(input?.sentencesPerScene) || 4;
   const rawTargetImages = Number(input?.targetImages) || Math.round(minutes * 2.5);
-  const targetScenes = countryHistoryMode ? clampInteger(rawTargetScenes, 18, 24) : publicBiographyMode ? clampInteger(rawTargetScenes, 18, 22) : rawTargetScenes;
-  const sentencesPerScene = countryHistoryMode || publicBiographyMode ? clampInteger(rawSentencesPerScene, 3, 4) : rawSentencesPerScene;
-  const targetImages = countryHistoryMode || publicBiographyMode ? clampInteger(rawTargetImages, 30, 40) : rawTargetImages;
+  const targetScenes = countryHistoryMode ? clampInteger(rawTargetScenes, 34, 44) : publicBiographyMode ? clampInteger(rawTargetScenes, 34, 44) : rawTargetScenes;
+  const sentencesPerScene = countryHistoryMode || publicBiographyMode ? clampInteger(rawSentencesPerScene, 4, 5) : rawSentencesPerScene;
+  const targetImages = countryHistoryMode || publicBiographyMode ? clampInteger(rawTargetImages, 38, 50) : rawTargetImages;
 
   return {
     title,
@@ -426,7 +426,7 @@ function normalizeStory(input, context) {
   const targetImages = outline.targetImages || Math.round((context.targetDurationMinutes || 15) * 2.5);
   const countryHistoryMode = isCountryHistoryTemplate(outline.template || context.template) || isCountryHistoryTopic(context.topic);
   const publicBiographyMode = isPublicFigureBiographyTemplate(outline.template || context.template) || isPublicFigureBiographyTopic(context.topic);
-  const minimumScenes = countryHistoryMode || publicBiographyMode ? 18 : Math.min(12, Math.max(8, targetScenes - 4));
+  const minimumScenes = countryHistoryMode || publicBiographyMode ? 30 : Math.min(12, Math.max(8, targetScenes - 4));
 
   // Require enough non-boilerplate scenes. Failing here is better than producing a video
   // whose final minutes repeat generic filler sentences.

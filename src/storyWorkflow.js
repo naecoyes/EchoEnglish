@@ -141,7 +141,8 @@ async function generateStoryWorkflow(options = {}) {
       logs
     });
     });
-    readingItems = audioSummary.items;
+    // Bug B fix: extract items from audioSummary explicitly — do not reassign outer readingItems inside the closure
+    readingItems = audioSummary?.items ?? readingItems;
   } else {
     pushLog(logs, "Skipping audio; estimating subtitle timings");
     readingItems = addEstimatedTimings(readingItems);
@@ -269,25 +270,31 @@ async function generateStoryWorkflow(options = {}) {
   }
 
   if (!options.skipAudio && resolveMusicMode(options.musicMode) === "minimax") {
-    await runStage(options, "music", async () => {
+    const generatedMusic = await runStage(options, "music", async () => {
     const musicCount = Number(options.musicCount || settings.minimax?.musicTrackCount || 3);
     pushLog(logs, `Generating ${musicCount} background music tracks with MiniMax`);
-    musicSummary = await generateMusic({
+    const result = await generateMusic({
       outputDir,
       apiKey: effectiveApiKey,
       model: options.musicModel || effectiveModels.music || MINIMAX_MUSIC_MODEL,
       prompt: options.musicPrompt || buildMusicPrompt(story),
       count: musicCount
     });
+    if (!result?.musicPath) {
+      throw new Error("Music generation completed but returned no musicPath.");
+    }
     pushLog(logs, "Background music ready: music/background.mp3");
     return {
-      status: musicSummary ? "completed" : "skipped",
+      ...result,
+      _stageStatus: "completed",
       counts: {
-        completed: Array.isArray(musicSummary?.tracks) ? musicSummary.tracks.length : 0,
+        completed: Array.isArray(result?.tracks) ? result.tracks.length : 0,
         total: musicCount
       }
     };
     });
+    // Bug D fix: capture musicSummary from the return value, not by mutating outer var inside closure
+    musicSummary = generatedMusic ?? null;
   } else {
     await notifyStage(options, "music", "skipped", { counts: { completed: 0, total: 0 } });
   }
@@ -313,7 +320,7 @@ async function generateStoryWorkflow(options = {}) {
 
     const composeBase = {
       story, readingItems, outputDir,
-      audioPath: audioSummary.audioPath,
+      audioPath: audioSummary?.audioPath,
       musicPath: musicSummary?.musicPath || null,
       musicVolume: Number(options.musicVolume || 0.12),
       imageMode: options.imageMode || "local",
@@ -505,7 +512,7 @@ async function assertComposeInputs({ outputDir, story, audioSummary, musicSummar
     throw new Error("Compose blocked: audio.wav is not ready.");
   }
   if (options.imageMode === "minimax" || options.imageMode === "google") {
-    const scenes = getUniqueImageScenes(story);
+    const scenes = getUniqueImageScenes(story, targetAspectRatio);
     let completed = 0;
     for (const scene of scenes) {
       if (await findSceneImage(outputDir, scene.id)) completed += 1;
@@ -571,8 +578,17 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
   const warnings = [];
   const timelineWarnings = [];
 
-  if (!isPodcastStory(story) && (imageCount < 30 || imageCount > 45)) {
-    warnings.push(`Image count ${imageCount} is outside the target range of 30-45.`);
+  const isLongFormFactual = isCountryHistoryStory(story) || isPublicFigureBiographyStory(story);
+  const imageCountMin = isLongFormFactual ? 38 : 30;
+  const imageCountMax = isLongFormFactual ? 50 : 45;
+  if (!isPodcastStory(story) && (imageCount < imageCountMin || imageCount > imageCountMax)) {
+    warnings.push(`Image count ${imageCount} is outside the target range of ${imageCountMin}-${imageCountMax}.`);
+  }
+  // Duration estimate gate: warn (not block) when audio is below 70% of target
+  const targetMinutes = Number(story.targetDurationMinutes || 15);
+  if (!skipAudio && audioDuration > 0 && audioDuration < targetMinutes * 60 * 0.70) {
+    const actualMins = (audioDuration / 60).toFixed(1);
+    warnings.push(`Audio duration ${actualMins} min is less than 70% of the target ${targetMinutes} min. Consider adding more scenes or increasing sentence count.`);
   }
   if (!skipAudio && audioDuration && Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.1) {
     timelineWarnings.push(`Audio duration and subtitle timeline differ by ${Math.abs(durationDelta.audioVsSubtitlesSeconds).toFixed(3)} seconds.`);
