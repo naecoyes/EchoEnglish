@@ -62,9 +62,10 @@ async function fetchWithPolicy(policyKey, url, options = {}, overrides = {}) {
 function enqueue(policyKey, task) {
   const previous = queues.get(policyKey) || Promise.resolve();
   const next = previous.catch(() => {}).then(task);
-  queues.set(policyKey, next.finally(() => {
-    if (queues.get(policyKey) === next) queues.delete(policyKey);
-  }));
+  const cleanup = next.catch(() => {}).then(() => {
+    if (queues.get(policyKey) === cleanup) queues.delete(policyKey);
+  });
+  queues.set(policyKey, cleanup);
   return next;
 }
 
