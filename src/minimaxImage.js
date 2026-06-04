@@ -161,17 +161,21 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
         console.warn(`[MiniMax Image] Sensitive error for ${scene.id}.`);
         if (fallbackGoogleOptions?.apiKey) {
           console.log(`[MiniMax Image] Falling back to Google API for ${scene.id}...`);
-          const { generateValidatedImage: googleFallback } = require("./googleImage");
-          return await googleFallback({
-            scene,
-            imagesDir,
-            outputDir,
-            apiKey: fallbackGoogleOptions.apiKey,
-            baseUrl: fallbackGoogleOptions.baseUrl,
-            model: fallbackGoogleOptions.model,
-            aspectRatio,
-            batchSize: 1
-          });
+          try {
+            const { generateValidatedImage: googleFallback } = require("./googleImage");
+            return await googleFallback({
+              scene,
+              imagesDir,
+              outputDir,
+              apiKey: fallbackGoogleOptions.apiKey,
+              baseUrl: fallbackGoogleOptions.baseUrl,
+              model: fallbackGoogleOptions.model,
+              aspectRatio,
+              batchSize: 1
+            });
+          } catch (googleError) {
+            console.warn(`[MiniMax Image] Google API fallback failed: ${googleError.message}`);
+          }
         }
         console.log(`[MiniMax Image] No Google API key, asking LLM to rewrite sensitive prompt for ${scene.id} (Attempt ${attempt})...`);
         try {
@@ -273,17 +277,21 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
         console.warn(`[MiniMax Image] Sensitive error for ${scene.id}.`);
         if (fallbackGoogleOptions?.apiKey) {
           console.log(`[MiniMax Image] Falling back to Google API for ${scene.id}...`);
-          const { generateValidatedImage: googleFallback } = require("./googleImage");
-          return await googleFallback({
-            scene,
-            imagesDir,
-            outputDir,
-            apiKey: fallbackGoogleOptions.apiKey,
-            baseUrl: fallbackGoogleOptions.baseUrl,
-            model: fallbackGoogleOptions.model,
-            aspectRatio,
-            batchSize
-          });
+          try {
+            const { generateValidatedImage: googleFallback } = require("./googleImage");
+            return await googleFallback({
+              scene,
+              imagesDir,
+              outputDir,
+              apiKey: fallbackGoogleOptions.apiKey,
+              baseUrl: fallbackGoogleOptions.baseUrl,
+              model: fallbackGoogleOptions.model,
+              aspectRatio,
+              batchSize
+            });
+          } catch (googleError) {
+            console.warn(`[MiniMax Image] Google API fallback failed: ${googleError.message}`);
+          }
         }
         console.log(`[MiniMax Image] No Google API key, asking LLM to rewrite sensitive prompt for ${scene.id} (Attempt ${attempt})...`);
         try {

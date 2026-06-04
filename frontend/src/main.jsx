@@ -1339,7 +1339,7 @@ function RecentPage({ items, refresh, openRecent, openDraft }) {
             </button>
             <div className="recent-meta">
               <span className={`status-dot ${item.status || "completed"}`}>{item.status || "completed"}</span>
-              <span>{new Date(item.updatedAt).toLocaleString()}</span>
+              <span>{new Date(item.updatedAt).toLocaleString("en-US", { timeZone: "Asia/Dubai" })}</span>
             </div>
             <div className="recent-actions">
               <button type="button" onClick={() => openRecent(item, "/preview")} disabled={!item.outputs?.video}>Preview</button>
@@ -1366,7 +1366,7 @@ function StatusPage({ status, logs, progress, job, onContinue, onRefresh }) {
       <div className="status-title-row">
         <div>
           <h2>{job?.topic || "Live job status"}</h2>
-          {job?.updatedAt && <p>Saved progress: {new Date(job.updatedAt).toLocaleString()}</p>}
+          {job?.updatedAt && <p>Saved progress: {new Date(job.updatedAt).toLocaleString("en-US", { timeZone: "Asia/Dubai" })} (UTC+4)</p>}
           {failedStage && <p>Failed stage: {failedStage}{job?.errorType ? ` · ${job.errorType}` : ""}</p>}
         </div>
         <div className="status-actions">
@@ -2421,7 +2421,7 @@ function resolveCoverProvider(coverProvider, imageProvider) {
 
 function formatSavedAt(value) {
   try {
-    return new Date(value).toLocaleString();
+    return new Date(value).toLocaleString("en-US", { timeZone: "Asia/Dubai" });
   } catch {
     return "the last browser session";
   }
