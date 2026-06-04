@@ -416,4 +416,4 @@ async function deleteSceneImage(imagesDir, sceneId) {
   await deleteBatchTempFiles(imagesDir, sceneId);
 }
 
-module.exports = { generateImages };
+module.exports = { generateImages, generateValidatedImage };

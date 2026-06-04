@@ -8,7 +8,7 @@ const { validateImageOrThrow } = require("./imageQuality");
 const API_URL = "https://api.minimaxi.com/v1/image_generation";
 const MAX_PROMPT_CHARS = 1450;
 
-async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3, onProgress }) {
+async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3, onProgress, fallbackGoogleOptions }) {
   if (!apiKey) {
     throw new Error("MINIMAX_API_KEY is required for MiniMax image generation.");
   }
@@ -80,7 +80,8 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
         model,
         aspectRatio,
         promptOptimizer,
-        batchSize
+        batchSize,
+        fallbackGoogleOptions
       });
       imageUrl = generated.imageUrl;
       outputPath = generated.outputPath;
@@ -119,14 +120,14 @@ async function reportProgress(onProgress, progress) {
   await onProgress(progress);
 }
 
-async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3 }) {
+async function generateValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize = 3, fallbackGoogleOptions }) {
   if (scene.hasPeople && batchSize > 1) {
-    return generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize: clampBatchSize(batchSize) });
+    return generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize: clampBatchSize(batchSize), fallbackGoogleOptions });
   }
-  return generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer });
+  return generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, fallbackGoogleOptions });
 }
 
-async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer }) {
+async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, fallbackGoogleOptions }) {
   let lastError = null;
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -155,6 +156,31 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
       return { imageUrl: imageUrls[0], outputPath, quality };
     } catch (error) {
       lastError = error;
+
+      if (error.message.includes("sensitive_prompt")) {
+        console.warn(`[MiniMax Image] Sensitive error for ${scene.id}.`);
+        if (fallbackGoogleOptions?.apiKey) {
+          console.log(`[MiniMax Image] Falling back to Google API for ${scene.id}...`);
+          const { generateValidatedImage: googleFallback } = require("./googleImage");
+          return await googleFallback({
+            scene,
+            imagesDir,
+            outputDir,
+            apiKey: fallbackGoogleOptions.apiKey,
+            baseUrl: fallbackGoogleOptions.baseUrl,
+            model: fallbackGoogleOptions.model,
+            aspectRatio,
+            batchSize: 1
+          });
+        }
+        console.log(`[MiniMax Image] No Google API key, falling back to safe placeholder prompt for ${scene.id}...`);
+        const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
+        if (scene.imagePrompt !== safeFallback) {
+          const safeScene = { ...scene, imagePrompt: safeFallback };
+          return await generateSingleValidatedImage({ scene: safeScene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer: false, fallbackGoogleOptions: null });
+        }
+      }
+
       await updateImageManifest(outputDir, scene.id, {
         status: "running",
         error: error.message,
@@ -176,7 +202,7 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
   throw lastError;
 }
 
-async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize }) {
+async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer, batchSize, fallbackGoogleOptions }) {
   let lastError = null;
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -237,12 +263,37 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
       return { imageUrl: imageUrls[0], outputPath: savedPaths[0], quality: null };
     } catch (error) {
       lastError = error;
+
+      if (error.message.includes("sensitive_prompt")) {
+        console.warn(`[MiniMax Image] Sensitive error for ${scene.id}.`);
+        if (fallbackGoogleOptions?.apiKey) {
+          console.log(`[MiniMax Image] Falling back to Google API for ${scene.id}...`);
+          const { generateValidatedImage: googleFallback } = require("./googleImage");
+          return await googleFallback({
+            scene,
+            imagesDir,
+            outputDir,
+            apiKey: fallbackGoogleOptions.apiKey,
+            baseUrl: fallbackGoogleOptions.baseUrl,
+            model: fallbackGoogleOptions.model,
+            aspectRatio,
+            batchSize
+          });
+        }
+        console.log(`[MiniMax Image] No Google API key, falling back to safe placeholder prompt for ${scene.id}...`);
+        const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
+        if (scene.imagePrompt !== safeFallback) {
+          const safeScene = { ...scene, imagePrompt: safeFallback };
+          return await generateBatchValidatedImage({ scene: safeScene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer: false, batchSize, fallbackGoogleOptions: null });
+        }
+      }
+
       await updateImageManifest(outputDir, scene.id, {
         status: "running",
         error: error.message,
         quality: error.quality || null
       });
-      await deleteSceneImage(imagesDir, scene.id);
+      await deleteBatchTempFiles(imagesDir, scene.id);
 
       // For timeout errors, wait before retrying
       if (error.message.includes("timeout") || error.message.includes("rpc timeout")) {
@@ -319,14 +370,7 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
   if (statusCode !== 0 && statusCode !== undefined) {
     const statusMsg = payload?.base_resp?.status_msg || "unknown error";
     if (statusMsg.includes("sensitive")) {
-      console.warn(`[minimax] Caught sensitive prompt error: ${statusMsg}. Retrying with safe placeholder prompt.`);
-      const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
-      if (safePrompt !== safeFallback) {
-        return generateMiniMaxImage(apiKey, safeFallback, {
-          ...options,
-          promptOptimizer: false
-        });
-      }
+      throw new Error(`MiniMax image API failed: sensitive_prompt - ${statusMsg}`);
     }
     throw new Error(`MiniMax image API failed: ${statusMsg}`);
   }

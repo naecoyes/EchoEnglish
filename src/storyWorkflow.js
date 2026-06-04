@@ -31,6 +31,7 @@ async function generateStoryWorkflow(options = {}) {
   const slug = slugify(topic);
   const outputDir = path.join(outputRoot, slug);
   const logs = options.logs || [];
+  const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
 
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new Error("--minutes must be a positive number.");
@@ -198,8 +199,6 @@ async function generateStoryWorkflow(options = {}) {
     return nextScriptJson;
   });
 
-  const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
-
   if (options.imageMode === "minimax" || options.imageMode === "google" || options.coverImageMode === "minimax" || options.coverImageMode === "google") {
     await runStage(options, "images", async () => {
     let totalCompleted = 0;
@@ -248,7 +247,12 @@ async function generateStoryWorkflow(options = {}) {
           aspectRatio: targetAspectRatio,
           promptOptimizer: true,
           batchSize: options.batchImageCount || 3,
-          onProgress: (progress) => reportImageProgress(options, logs, progress)
+          onProgress: (progress) => reportImageProgress(options, logs, progress),
+          fallbackGoogleOptions: {
+            apiKey: settings.google?.apiKey,
+            baseUrl: settings.google?.baseUrl,
+            model: options.googleImageModel || settings.google?.imageModel
+          }
         });
       if (isPodcastStory(story)) {
         await saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
@@ -302,7 +306,7 @@ async function generateStoryWorkflow(options = {}) {
   let videoSummary = null;
   if (!options.skipAudio) {
     videoSummary = await runStage(options, "compose", async () => {
-    await assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options });
+    await assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options, targetAspectRatio });
 
     const frames = buildReadingItems(story).length;
     const totalOrientations = 2;
@@ -507,7 +511,7 @@ function inferStagePatch(stageId, result) {
   return {};
 }
 
-async function assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options }) {
+async function assertComposeInputs({ outputDir, story, audioSummary, musicSummary, options, targetAspectRatio = "16:9" }) {
   if (!audioSummary?.audioPath || !(await pathExists(audioSummary.audioPath))) {
     throw new Error("Compose blocked: audio.wav is not ready.");
   }
