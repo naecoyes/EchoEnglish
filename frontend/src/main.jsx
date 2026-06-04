@@ -412,6 +412,35 @@ function App() {
     }
   }
 
+  async function openDraft(item) {
+    const draftPath = item.outputs?.draftJson;
+    if (!draftPath) { openRecent(item); return; }
+    try {
+      const saved = await fetchJson(draftPath);
+      const topic = saved.topic || saved.draft?.topic || item.title || "Story Video";
+      setForm((current) => ({
+        ...current,
+        topic,
+        minutes: "15",
+        templateId: saved.template?.id || saved.draft?.template?.id || current.templateId
+      }));
+      setOutline(saved.outline || saved.draft?.outline || null);
+      setOutlineTopic(topic);
+      setDraft(saved.draft || saved);
+      setDraftFeedback("");
+      setDraftMeta({
+        autosaved: { draftJson: draftPath },
+        imageTarget: (saved.draft || saved)?.sections?.reduce((n, s) => n + (s.imageBeats?.length || 1), 0) || 0,
+        musicTarget: 3
+      });
+      setStatus("idle");
+      setLogs([`Loaded saved draft for "${topic}". Review or revise before generating.`]);
+      navigate("/generate");
+    } catch (error) {
+      window.alert(`Could not load draft: ${error.message}`);
+    }
+  }
+
   function openRecent(item, path = "/preview") {
     setCurrentOutput(item);
     window.localStorage.setItem("echoenglish:lastOutput", item.slug);
@@ -482,7 +511,7 @@ function App() {
         )}
         {route === "/preview" && <PreviewPage output={activeOutput} onRepairDraftCreated={handleRepairDraftCreated} />}
         {route === "/outputs" && <OutputsPage output={activeOutput} />}
-        {route === "/recent" && <RecentPage items={recent} refresh={loadRecentOutputs} openRecent={openRecent} />}
+        {route === "/recent" && <RecentPage items={recent} refresh={loadRecentOutputs} openRecent={openRecent} openDraft={openDraft} />}
         {route === "/status" && <StatusPage status={status} logs={logs} progress={progress} job={job} onContinue={handleContinueJob} onRefresh={handleRefreshJob} />}
         {route === "/settings" && <SettingsPage onSaved={refreshConfig} />}
       </main>
@@ -1254,7 +1283,7 @@ function OutputsPage({ output }) {
   );
 }
 
-function RecentPage({ items, refresh, openRecent }) {
+function RecentPage({ items, refresh, openRecent, openDraft }) {
   async function renameOutput(item) {
     const title = window.prompt("Rename output", item.title || "");
     if (title === null) return;
@@ -1311,6 +1340,9 @@ function RecentPage({ items, refresh, openRecent }) {
             <div className="recent-actions">
               <button type="button" onClick={() => openRecent(item, "/preview")} disabled={!item.outputs?.video}>Preview</button>
               <button type="button" onClick={() => openRecent(item, "/outputs")}>Outputs</button>
+              {item.status === "draft" && item.outputs?.draftJson && (
+                <button type="button" className="primary-action" onClick={() => openDraft(item)}>Edit Draft</button>
+              )}
               <button type="button" onClick={() => renameOutput(item)}>Rename</button>
               <button className="danger-action" type="button" onClick={() => deleteOutput(item)}>Delete</button>
             </div>

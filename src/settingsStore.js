@@ -730,9 +730,7 @@ async function writeLocalSettings(settings) {
       pin: settings.access.pin
     }
   };
-  const tmpFile = `${SETTINGS_FILE}.tmp`;
-  await fs.writeFile(tmpFile, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-  await fs.rename(tmpFile, SETTINGS_FILE);
+  await fs.writeFile(SETTINGS_FILE, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
 }
 
 function maskApiKey(apiKey) {
