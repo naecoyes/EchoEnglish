@@ -173,11 +173,16 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
             batchSize: 1
           });
         }
-        console.log(`[MiniMax Image] No Google API key, falling back to safe placeholder prompt for ${scene.id}...`);
-        const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
-        if (scene.imagePrompt !== safeFallback) {
-          const safeScene = { ...scene, imagePrompt: safeFallback };
-          return await generateSingleValidatedImage({ scene: safeScene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer: false, fallbackGoogleOptions: null });
+        console.log(`[MiniMax Image] No Google API key, asking LLM to rewrite sensitive prompt for ${scene.id} (Attempt ${attempt})...`);
+        try {
+          const { rewriteSensitiveImagePrompt } = require("./llmStoryPlanner");
+          const rewrittenPrompt = await rewriteSensitiveImagePrompt(scene.imagePrompt || scene.title, attempt);
+          console.log(`[MiniMax Image] Rewritten prompt: ${rewrittenPrompt}`);
+          scene = { ...scene, imagePrompt: rewrittenPrompt };
+          continue;
+        } catch (llmError) {
+          console.warn(`[MiniMax Image] Failed to rewrite prompt: ${llmError.message}`);
+          throw error;
         }
       }
 
@@ -280,11 +285,16 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
             batchSize
           });
         }
-        console.log(`[MiniMax Image] No Google API key, falling back to safe placeholder prompt for ${scene.id}...`);
-        const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
-        if (scene.imagePrompt !== safeFallback) {
-          const safeScene = { ...scene, imagePrompt: safeFallback };
-          return await generateBatchValidatedImage({ scene: safeScene, imagesDir, outputDir, apiKey, model, aspectRatio, promptOptimizer: false, batchSize, fallbackGoogleOptions: null });
+        console.log(`[MiniMax Image] No Google API key, asking LLM to rewrite sensitive prompt for ${scene.id} (Attempt ${attempt})...`);
+        try {
+          const { rewriteSensitiveImagePrompt } = require("./llmStoryPlanner");
+          const rewrittenPrompt = await rewriteSensitiveImagePrompt(scene.imagePrompt || scene.title, attempt);
+          console.log(`[MiniMax Image] Rewritten prompt: ${rewrittenPrompt}`);
+          scene = { ...scene, imagePrompt: rewrittenPrompt };
+          continue;
+        } catch (llmError) {
+          console.warn(`[MiniMax Image] Failed to rewrite prompt: ${llmError.message}`);
+          throw error;
         }
       }
 

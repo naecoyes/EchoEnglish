@@ -1231,11 +1231,61 @@ function countStorySentences(story) {
   return (story.sections || []).reduce((total, section) => total + (section.sentences?.length || 0), 0);
 }
 
+async function rewriteSensitiveImagePrompt(prompt, attempt) {
+  const config = await getLlmConfig();
+  if (!config || !config.apiKey) {
+    throw new Error("No LLM configuration available to rewrite sensitive prompt.");
+  }
+
+  let sys = "You are an image prompt rewriting assistant. The user will provide a prompt that was rejected by an image API due to sensitive content (e.g. real-world politicians, sensitive historical figures, or violence). Your task is to rewrite the prompt to describe the visual scene generically, REMOVING ALL NAMES of real people, places, or sensitive events. Keep the visual style, lighting, and general composition intact, but make the subjects entirely generic. Return ONLY the new rewritten prompt text, nothing else.";
+  if (attempt > 2) {
+     sys += " The previous rewrite was ALSO rejected. Be extremely cautious this time. Strip out all specific subjects and make it a highly abstract, safe, generic landscape or architectural scene matching the original mood.";
+  } else if (attempt > 1) {
+     sys += " The previous rewrite was still flagged. Try harder to remove anything remotely sensitive. Replace human figures with silhouettes or generic archetypes.";
+  }
+
+  const isXiaomi = config.provider === "xiaomi";
+  const model = isXiaomi ? String(config.model || "").trim().toLowerCase() : config.model;
+  const headers = isXiaomi
+    ? {
+        "api-key": config.apiKey,
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      }
+    : {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      };
+
+  const body = {
+    model,
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.7,
+    max_tokens: 200
+  };
+
+  const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+
+  const payload = await response.json();
+  if (!response.ok || payload.error) {
+    throw new Error(formatLlmHttpError(response.status, payload));
+  }
+  return payload.choices?.[0]?.message?.content?.trim() || prompt;
+}
+
 module.exports = {
-  createPureStory,
   createStoryOutline,
-  generateVideoTemplate,
+  createPureStory,
   reviseStoryDraft,
   validateStoryWithLLM,
-  getLlmConfig
+  generateVideoTemplate,
+  getLlmConfig,
+  rewriteSensitiveImagePrompt
 };
