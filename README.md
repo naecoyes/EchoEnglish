@@ -16,6 +16,10 @@ EchoEnglish is a local AI workflow for generating English shadowing videos from 
 
 The dashboard is designed for long 15-minute learning videos, with recoverable generation stages so API quota errors, network failures, or service restarts do not waste completed audio, images, or music.
 
+## Demo Video
+
+<video src="docs/videos/Marie_Curie_landscape_edited.mp4" controls="controls" width="100%"></video>
+
 ## Screenshots
 
 ### Generate Dashboard
