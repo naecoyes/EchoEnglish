@@ -8,7 +8,7 @@ const DEFAULT_POLICIES = {
   "google:tts": { minIntervalMs: 1600, retries: 4, timeoutMs: 90000 },
   "google:image": { minIntervalMs: 2200, retries: 4, timeoutMs: 120000 },
   "xiaomi:tts": { minIntervalMs: 3500, retries: 5, timeoutMs: 90000 },
-  "llm:text": { minIntervalMs: 1000, retries: 3, timeoutMs: 180000 },
+  "llm:text": { minIntervalMs: 1000, retries: 3, timeoutMs: 600000 },
   "tavily:search": { minIntervalMs: 1000, retries: 3, timeoutMs: 45000 },
   "download:image": { minIntervalMs: 150, retries: 5, timeoutMs: 60000 }
 };

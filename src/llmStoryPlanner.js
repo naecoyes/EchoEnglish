@@ -310,7 +310,7 @@ async function callChatJson(config, prompt, maxTokens) {
         max_tokens: maxTokens
       };
 
-  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 180000);
+  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 600000);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
