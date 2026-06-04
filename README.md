@@ -18,7 +18,7 @@ The dashboard is designed for long 15-minute learning videos, with recoverable g
 
 ## Demo Video
 
-<video src="docs/videos/Marie_Curie_landscape_edited.mp4" controls="controls" width="100%"></video>
+<video src="https://github.com/naecoyes/EchoEnglish/raw/main/docs/videos/Marie_Curie_landscape_edited.mp4" controls="controls" width="100%"></video>
 
 ## Screenshots
 
