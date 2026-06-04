@@ -7,7 +7,7 @@ services:
     container_name: echo-english
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3002:3001"
+      - "3002:3001"
 
     # ── Persistent storage ────────────────────────────────────────────────────
     volumes:
@@ -15,8 +15,12 @@ services:
       - ./outputs:/app/outputs
       # Settings (API keys, models) stored outside the container
       - ./data:/app/data
+      # Local settings JSON for API keys
+      - ./settings.local.json:/app/settings.local.json
 
     # ── API keys & config (all optional — can also be set via the Settings UI) ─
+    env_file:
+      - .env
     environment:
       PORT: 3001
       HOST: 0.0.0.0
