@@ -525,10 +525,6 @@ function AppHeader({ config, status, route }) {
   return (
     <header className="app-header glass-card">
       <div>
-        <div className="brand-row">
-          <img className="brand-logo" src="/icons/icon.svg" alt="" />
-          <p className="eyebrow">EchoEnglish</p>
-        </div>
         <h1>{meta.title}</h1>
         <p className="header-copy">{meta.subtitle}</p>
       </div>

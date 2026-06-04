@@ -413,11 +413,11 @@ a {
 
 .app-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 104px;
-  padding: 24px 26px;
+  min-height: 56px;
+  padding: 12px 22px;
   border-radius: 34px;
 }
 
