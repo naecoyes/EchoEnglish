@@ -1,7 +1,7 @@
 # EchoEnglish
 
 <p align="center">
-  <img src="docs/screenshots/logo.svg" alt="EchoEnglish Logo" width="200">
+  <img src="logo/logoyoutubo2.png" alt="EchoEnglish Logo" width="200">
 </p>
 
 <p align="center">
@@ -9,6 +9,10 @@
 </p>
 
 EchoEnglish is a local AI workflow for generating English shadowing videos from any topic. It creates a reviewed script, sentence-level narration, story-beat scene images, bilingual captions, vocabulary notes, background music, YouTube publishing copy, and a final MP4 (landscape + portrait).
+
+**Check out our generated videos:**
+- [YouTube: @NowEchoEnglish](https://www.youtube.com/@NowEchoEnglish)
+- [Bilibili: 影子英语](https://space.bilibili.com/353706495)
 
 The dashboard is designed for long 15-minute learning videos, with recoverable generation stages so API quota errors, network failures, or service restarts do not waste completed audio, images, or music.
 
