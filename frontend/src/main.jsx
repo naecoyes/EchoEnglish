@@ -1394,8 +1394,46 @@ function StatusPage({ status, logs, progress, job, onContinue, onRefresh }) {
           {job.recoverable && <small>Suggestion: wait for API quota or service recovery, then click Continue Generation.</small>}
         </div>
       )}
-      <pre className="log-box">{logs.join("\n")}</pre>
+      <ColoredLogBox logs={logs} />
     </section>
+  );
+}
+
+function ColoredLogBox({ logs = [] }) {
+  const boxRef = React.useRef(null);
+  React.useEffect(() => {
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs.length]);
+
+  function classifyLine(text) {
+    const t = text.toLowerCase();
+    if (/error|failed|exception|abort/.test(t)) return "log-error";
+    if (/warn|quota|rate.?limit|retry|skip/.test(t)) return "log-warn";
+    if (/\bcomplete|\bfinished|\bsuccess|quality gate passed|\bmerging|\bdone\b/.test(t)) return "log-ok";
+    if (/audio|tts|speech|wav|mp3|clip/.test(t)) return "log-audio";
+    if (/image|scene|cover|png|jpg|render/.test(t)) return "log-image";
+    if (/music|track|background/.test(t)) return "log-music";
+    if (/\bvideo|ffmpeg|mp4|compose|timeline/.test(t)) return "log-video";
+    if (/^\[20/.test(text.trimStart())) return "log-ts";
+    return "";
+  }
+
+  return (
+    <div ref={boxRef} className="log-box log-terminal">
+      {logs.map((line, i) => {
+        const ts = line.match(/^(\[\d{4}-[^\]]+\]\s*)(.*)$/);
+        if (ts) {
+          return (
+            <div key={i} className={`log-line ${classifyLine(ts[2])}`}>
+              <span className="log-time">{ts[1]}</span>
+              <span>{ts[2]}</span>
+            </div>
+          );
+        }
+        return <div key={i} className={`log-line ${classifyLine(line)}`}>{line}</div>;
+      })}
+    </div>
   );
 }
 
