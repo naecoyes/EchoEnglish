@@ -509,7 +509,7 @@ function App() {
             onRevise={handleReviseDraft}
           />
         )}
-        {route === "/preview" && <PreviewPage output={activeOutput} onRepairDraftCreated={handleRepairDraftCreated} />}
+        {route === "/preview" && <PreviewPage output={activeOutput} onRepairDraftCreated={handleRepairDraftCreated} onRetry={() => openDraft(activeOutput)} />}
         {route === "/outputs" && <OutputsPage output={activeOutput} />}
         {route === "/recent" && <RecentPage items={recent} refresh={loadRecentOutputs} openRecent={openRecent} openDraft={openDraft} />}
         {route === "/status" && <StatusPage status={status} logs={logs} progress={progress} job={job} onContinue={handleContinueJob} onRefresh={handleRefreshJob} />}
@@ -835,7 +835,7 @@ function estimateImageBeats(draft) {
   }, 0);
 }
 
-function PreviewPage({ output, onRepairDraftCreated }) {
+function PreviewPage({ output, onRepairDraftCreated, onRetry }) {
   const slug = slugFromOutputs(output?.outputs);
   const [videoVersion, setVideoVersion] = useState(0);
   const [rerenderState, setRerenderState] = useState("");
@@ -1021,6 +1021,14 @@ function PreviewPage({ output, onRepairDraftCreated }) {
             </div>
           </div>
         </div>
+      ) : output ? (
+        <EmptyState title="Video not available" text={`The video for "${output.title}" is missing or generation failed.`}>
+          {output.outputs?.draftJson && (
+            <div style={{ marginTop: "16px" }}>
+              <button type="button" className="primary-action" onClick={onRetry}>Retry / Edit Draft</button>
+            </div>
+          )}
+        </EmptyState>
       ) : (
         <EmptyState title="Select or generate a video" text="Open a recent output or generate a new story to preview final.mp4 here." />
       )}
@@ -2198,11 +2206,12 @@ function SettingsPage({ onSaved }) {
   );
 }
 
-function EmptyState({ title, text }) {
+function EmptyState({ title, text, children }) {
   return (
     <div className="empty-state">
-      <strong>{title}</strong>
-      <span>{text}</span>
+      <h3>{title}</h3>
+      <p>{text}</p>
+      {children}
     </div>
   );
 }
