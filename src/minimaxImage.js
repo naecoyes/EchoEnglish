@@ -318,6 +318,16 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
   const statusCode = payload?.base_resp?.status_code;
   if (statusCode !== 0 && statusCode !== undefined) {
     const statusMsg = payload?.base_resp?.status_msg || "unknown error";
+    if (statusMsg.includes("sensitive")) {
+      console.warn(`[minimax] Caught sensitive prompt error: ${statusMsg}. Retrying with safe placeholder prompt.`);
+      const safeFallback = "A beautiful abstract landscape, soft lighting, cinematic atmosphere.";
+      if (safePrompt !== safeFallback) {
+        return generateMiniMaxImage(apiKey, safeFallback, {
+          ...options,
+          promptOptimizer: false
+        });
+      }
+    }
     throw new Error(`MiniMax image API failed: ${statusMsg}`);
   }
 
