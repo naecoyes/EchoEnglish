@@ -165,6 +165,10 @@ EchoEnglish blocks weak scripts before expensive media APIs run:
 - The vocabulary bank is enriched with domain words for biographies (achievement, legacy, resilience, discipline, breakthrough, etc.) and science (radiation, experiment, physics, chemistry, etc.). A fallback pool ensures every scene reaches 3 notes even when the LLM omits them.
 - Draft generation uses the local quality gate by default. Set `ECHOENGLISH_LLM_DRAFT_VALIDATION=1` for a second LLM judge pass (slower).
 - Confirmed drafts are checked again before TTS, images, music, and video composition.
+- MiniMax image generation automatically falls back to LLM prompt rewriting when sensitive word filters are triggered, ensuring seamless visual continuity.
+- API limits (such as Google 429 Rate Limits) are transparently caught by the task queue to prevent process crashes.
+- LLM text generation supports an extended 10-minute timeout to safely handle massive 15-minute generation payloads.
+- Docker exposes port 3002 to `0.0.0.0` by default, allowing external access from LAN or virtual subnets (like Tailscale `100.x.x.x`).
 - TTS manifests, image manifests, music manifests, and timeline manifests are saved for recovery and debugging.
 - The final video timeline is aligned to the real `audio.wav` duration.
 - Existing outputs can be analyzed from Preview with **Analyze Quality** and repaired with **Create Repair Draft**.
