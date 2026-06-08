@@ -71,6 +71,7 @@ async function createStoryOutline({ topic, minutes, searchContext = null, templa
     factualMode
       ? "This topic is about a real company, product, person, or history. Use factual documentary mode, not fictional story mode."
       : "If the topic is fictional or generic, use a simple story mode.",
+    `- CRITICAL TOPIC ADHERENCE: The entire outline from beginning to end MUST remain focused exclusively on the topic: "${topic}". NEVER switch to discussing a different person, company, or historical figure halfway through. Maintain strict subject continuity.`,
     "Return only valid JSON with this shape:",
     "{",
     '  "title": "string",',
@@ -180,6 +181,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
       : "Write the complete source JSON for a pure English story narration video.",
     template ? formatTemplateForPrompt(template) : "",
     "Important rules:",
+    `- CRITICAL TOPIC ADHERENCE: The entire story from beginning to end MUST remain focused exclusively on the topic: "${topic}". NEVER switch to discussing a different person, company, or historical figure halfway through the story. Maintain strict subject continuity across all scenes.`,
     podcastMode
       ? "- Podcast mode: write natural two-host dialogue. Every sentence must begin with Host A: or Host B: so the TTS can choose the right voice."
       : "- Pure story mode only. Do not include Part, Chapter, Listen, Shadow, Review, teaching instructions, or repeated rounds.",
