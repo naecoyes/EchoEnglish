@@ -524,6 +524,26 @@ async function testGoogleConnection(input = {}) {
     if (!Array.isArray(payload?.models)) {
       return { ok: false, error: "Google response did not include a models list." };
     }
+
+    // Secondary check: verify actual generative quota since /models is free
+    // Users often have valid keys but exhausted prepayment credits (yielding 429 Quota Exceeded)
+    const generateUrl = `${google.baseUrl.replace(/\/$/, "")}/models/gemini-1.5-flash:generateContent?key=${google.apiKey}`;
+    const generateResponse = await fetch(generateUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        generationConfig: { maxOutputTokens: 1 }
+      })
+    });
+    const generatePayload = await generateResponse.json().catch(() => null);
+    if (!generateResponse.ok) {
+      const msg = generatePayload?.error?.message || "";
+      if (generateResponse.status === 429 || generateResponse.status === 402 || /quota|insufficient|balance|credit/i.test(msg)) {
+        return { ok: false, error: `Google API key is valid, but account quota/credits are exhausted (HTTP ${generateResponse.status}). ${msg}`.trim() };
+      }
+      return { ok: false, error: `Google generative API test failed (HTTP ${generateResponse.status}). ${msg}`.trim() };
+    }
     return {
       ok: true,
       message: `Google API key is valid. Configured TTS: ${google.ttsModel}; Imagen: ${google.imageModel}; voice: ${google.voice}.`

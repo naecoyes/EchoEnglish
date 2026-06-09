@@ -42,8 +42,13 @@ async function fetchWithPolicy(policyKey, url, options = {}, overrides = {}) {
       try {
         const response = await fetchWithTimeout(url, options, policy.timeoutMs);
         if (isRetryableStatus(response.status)) {
+          const text = await response.clone().text().catch(() => "");
+          const parsedError = httpError(policyKey, response.status, parseJson(text), text);
+          if (parsedError.message.includes("quota_exceeded")) {
+            return response; // Pass through to caller to throw immediately without retrying
+          }
           const retryAfterMs = retryAfterToMs(response.headers.get("retry-after"));
-          lastError = httpError(policyKey, response.status, null, "");
+          lastError = parsedError;
           await delay(retryAfterMs || backoffMs(attempt, policy));
           continue;
         }
