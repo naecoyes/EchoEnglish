@@ -166,7 +166,8 @@ EchoEnglish blocks weak scripts before expensive media APIs run:
 - Draft generation uses the local quality gate by default. Set `ECHOENGLISH_LLM_DRAFT_VALIDATION=1` for a second LLM judge pass (slower).
 - Confirmed drafts are checked again before TTS, images, music, and video composition.
 - MiniMax image generation automatically falls back to LLM prompt rewriting when sensitive word filters are triggered, ensuring seamless visual continuity.
-- API limits (such as Google 429 Rate Limits) are transparently caught by the task queue to prevent process crashes.
+- **Strict API Pacing & Quota Protection**: The task queue enforces safe concurrency limits (e.g., forcing a 4.2-second interval between Google Imagen requests to comply with the 15 RPM limit of Gemini Tier 1) to prevent `429 TooManyRequests`. If your Google account runs out of prepayment credits, the system instantly halts to prevent endless retries.
+- **Immutable Job State (Continue Generation)**: When resuming a failed generation, the system strictly preserves the settings snapshot (e.g., Image Provider, TTS Voices) from when the job was originally created to guarantee video consistency. To apply new settings, reload the topic and click 'Confirm Generation' to create a fresh job from the existing draft.
 - LLM text generation supports an extended 10-minute timeout to safely handle massive 15-minute generation payloads.
 - Docker exposes port 3002 to `0.0.0.0` by default, allowing external access from LAN or virtual subnets (like Tailscale `100.x.x.x`).
 - TTS manifests, image manifests, music manifests, and timeline manifests are saved for recovery and debugging.
