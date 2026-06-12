@@ -30,7 +30,12 @@ async function generateImages({ scenes, outputDir, apiKey, model, aspectRatio, p
         error: "Prompt changed; cached image will be regenerated."
       });
     }
-    const cachedPath = await findExistingImage(imagesDir, scene.id);
+    const cachedPath = !manifestItem?.promptChanged
+      && manifestItem?.status === "completed"
+      && manifestItem?.imagePath
+      && await pathExists(manifestItem.imagePath)
+      ? manifestItem.imagePath
+      : null;
     if (cachedPath) {
       const quality = await validateCachedImage(cachedPath, imagesDir, scene.id);
       if (!quality) {
@@ -205,6 +210,13 @@ async function generateSingleValidatedImage({ scene, imagesDir, outputDir, apiKe
         continue;
       }
 
+      if (isRetryableEmptyImageResponse(error)) {
+        const waitMs = Math.min(30000, 4000 * attempt);
+        console.log(`[MiniMax Image] Empty image response on attempt ${attempt}/${maxAttempts} for ${scene.id}. Waiting ${waitMs/1000}s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       if (!isImageQualityError(error)) throw error;
     }
   }
@@ -321,6 +333,13 @@ async function generateBatchValidatedImage({ scene, imagesDir, outputDir, apiKey
         continue;
       }
 
+      if (isRetryableEmptyImageResponse(error)) {
+        const waitMs = Math.min(30000, 4000 * attempt);
+        console.log(`[MiniMax Image] Empty image response on attempt ${attempt}/${maxAttempts} for ${scene.id}. Waiting ${waitMs/1000}s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       if (!isImageQualityError(error)) throw error;
     }
   }
@@ -393,12 +412,51 @@ async function requestImage({ apiKey, model, prompt, aspectRatio, promptOptimize
     throw new Error(`MiniMax image API failed: ${statusMsg}`);
   }
 
-  const imageUrls = payload?.data?.image_urls || [];
+  const imageUrls = extractMiniMaxImageUrls(payload);
   if (imageUrls.length === 0) {
     throw new Error("MiniMax image response did not include any image URLs.");
   }
 
   return imageUrls;
+}
+
+function extractMiniMaxImageUrls(payload) {
+  const candidates = [
+    payload?.data?.image_urls,
+    payload?.data?.imageUrls,
+    payload?.data?.images,
+    payload?.data?.resources,
+    payload?.images,
+    payload?.image_urls,
+    payload?.output?.images,
+    payload?.output?.image_urls
+  ];
+  const urls = [];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      candidate.forEach((item) => {
+        const url = typeof item === "string"
+          ? item
+          : item?.url || item?.image_url || item?.imageUrl || item?.download_url || item?.file_url;
+        if (isHttpImageUrl(url)) urls.push(url);
+      });
+    } else if (isHttpImageUrl(candidate)) {
+      urls.push(candidate);
+    }
+  }
+  for (const key of ["image_url", "imageUrl", "url", "download_url", "file_url"]) {
+    const url = payload?.data?.[key] || payload?.[key];
+    if (isHttpImageUrl(url)) urls.push(url);
+  }
+  return [...new Set(urls)];
+}
+
+function isHttpImageUrl(value) {
+  return /^https?:\/\//i.test(String(value || ""));
+}
+
+function isRetryableEmptyImageResponse(error) {
+  return /did not include any image urls/i.test(String(error?.message || error || ""));
 }
 
 function prepareMiniMaxPrompt(scene, aspectRatio = "16:9") {

@@ -1,5 +1,5 @@
-const CACHE_NAME = "echoenglish-shell-v2";
-const SHELL = ["/generate", "/manifest.webmanifest", "/icons/icon.svg"];
+const CACHE_NAME = "echoenglish-shell-v3";
+const SHELL = ["/generate", "/manifest.webmanifest", "/icons/logo-192.png", "/icons/logo-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

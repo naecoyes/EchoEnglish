@@ -82,8 +82,9 @@ async function initImageManifest(outputDir, scenes) {
     const prior = previous.get(scene.id) || {};
     const prompt = scene.imagePrompt || scene.visual || "";
     const promptHash = hashPrompt(prompt);
+    const cacheKey = imageCacheKey(scene.id, promptHash);
     const priorPathExists = prior.imagePath ? await pathExists(prior.imagePath) : false;
-    const priorHasTrustedPrompt = prior.promptHash && prior.promptHash === promptHash;
+    const priorHasTrustedPrompt = prior.promptHash && prior.promptHash === promptHash && prior.cacheKey === cacheKey;
     const promptChanged = Boolean(
       (prior.prompt && prior.prompt !== prompt)
       || (prior.imagePath && !priorHasTrustedPrompt)
@@ -98,8 +99,14 @@ async function initImageManifest(outputDir, scenes) {
     items.push({
       sceneId: scene.id,
       index,
+      continuityMode: scene.continuityMode || null,
+      continuityGroupId: scene.continuityGroupId || null,
+      characterAnchor: scene.characterAnchor || null,
+      locationAnchor: scene.locationAnchor || null,
+      imageType: imageSceneGroup(scene.id),
       prompt,
       promptHash,
+      cacheKey,
       promptChanged,
       status: imagePath ? "completed" : promptChanged ? "pending" : prior.status === "completed" ? "pending" : prior.status || "pending",
       imagePath: imagePath || null,
@@ -141,12 +148,22 @@ async function updateImageManifest(outputDir, sceneId, patch) {
   const file = imageManifestPath(outputDir);
   const manifest = await readJson(file, { total: 0, completed: 0, items: [] });
   const item = manifest.items.find((candidate) => candidate.sceneId === sceneId);
-  if (item) Object.assign(item, patch);
+  if (item) {
+    Object.assign(item, patch);
+    if (item.status === "completed" && item.imagePath && item.promptHash) {
+      item.cacheKey = imageCacheKey(item.sceneId, item.promptHash);
+      item.verifiedAt = new Date().toISOString();
+    }
+  }
   manifest.updatedAt = new Date().toISOString();
   manifest.completed = manifest.items.filter((entry) => entry.status === "completed").length;
   manifest.total = manifest.items.length;
   await writeJson(file, manifest);
   return manifest;
+}
+
+function imageCacheKey(sceneId, promptHash) {
+  return `${sceneId}:${promptHash || ""}`;
 }
 
 async function initMusicManifest(outputDir, count) {

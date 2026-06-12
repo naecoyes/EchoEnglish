@@ -200,6 +200,8 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     `- The video should use ${targetImages} total background image beats. Do not create one image per sentence.`,
     "- Each image beat should cover 2-4 adjacent sentences. Most scenes should use one image beat covering all sentences; use two only for major visual changes.",
     "- Let the model decide image beat timing from the story flow by assigning sentenceStart and sentenceEnd for each imageBeat.",
+    "- Create a visualContinuity object for the whole video. It must define a documentary continuity strategy, shared visual style, color palette, camera style, recurring locations/objects, character anchors, negative prompt, and image reuse policy.",
+    "- For documentary continuity, do not rely on regenerating an identical face in every image. Use repeated environments, objects, wardrobe colors, side/back views, silhouettes, public-context shots, and adjacent image beat reuse to keep the video visually stable.",
     "- Every scene must have complete Chinese sentence translations, exactly 3 useful vocabulary notes, IPA phonetics, and a concise photorealistic image prompt.",
     "- Chinese translations must be natural full-sentence Chinese. Do not shorten, omit named entities, or leave placeholders.",
     "- Vocabulary notes must use this exact structure: [\"word or phrase\", \"中文释义\", \"/IPA/\"]. All three fields must be non-empty. Each scene must include 3 valid entries, not 1 or 2.",
@@ -260,6 +262,7 @@ function buildStoryPrompt(topic, minutes, outline, template = null) {
     '  "summary": "string",',
     '  "coverImagePrompt": "A 45-70 word creative seed for the video cover image. Describe the strongest visual hook, subject, mood, and setting. Do not request embedded text, signs, logos, subtitles, typography, or placeholder words.",',
     '  "storyboardDesign": {"visualStyle": "string", "learningFocus": "string", "framePattern": "string", "targetLength": "string"},',
+    '  "visualContinuity": {"mode": "documentary", "visualStyle": "string", "colorPalette": "string", "cameraStyle": "string", "locationAnchors": ["string"], "characterAnchors": ["string"], "negativePrompt": "string", "reusePolicy": "string"},',
     '  "sections": [',
     `    {"title": "short internal scene label, not spoken", "visual": "string", "imagePrompt": "45-70 word English photorealistic prompt", "imageBeats": [{"sentenceStart": 0, "sentenceEnd": ${sentencesPerScene - 1}, "durationNote": "covers the whole scene", "imagePrompt": "specific 45-70 word prompt for this beat"}], "sentences": ["English sentence"], "translations": ["完整中文翻译"], "vocabulary": [["word or phrase 1", "中文释义", "/IPA/"], ["word or phrase 2", "中文释义", "/IPA/"], ["word or phrase 3", "中文释义", "/IPA/"]]}`,
     "  ]",
@@ -469,6 +472,7 @@ function normalizeStory(input, context) {
       targetLength: cleanText(input?.storyboardDesign?.targetLength) || "15-20 minutes without repeated teaching rounds",
       repairWarning: generationWarnings[0] || ""
     },
+    visualContinuity: normalizeVisualContinuity(input?.visualContinuity, outline, context.topic),
     generationWarnings,
     opening: [],
     sections: normalizedSections,
@@ -583,6 +587,22 @@ function normalizeSection(section, index, storyTitle) {
     speakers,
     translations: translations.length === sentences.length ? translations : sentences.map(() => "中文释义待补充。"),
     vocabulary: vocabulary.length ? vocabulary : fallbackVocabulary(sentences.join(" "))
+  };
+}
+
+function normalizeVisualContinuity(input, outline, topic) {
+  const value = input && typeof input === "object" ? input : {};
+  const visualStyle = cleanText(value.visualStyle) || cleanText(outline?.visualStyle) || "photorealistic cinematic documentary still";
+  return {
+    mode: "documentary",
+    visualStyle,
+    colorPalette: cleanText(value.colorPalette) || "consistent documentary color grade, warm neutral highlights, realistic shadows",
+    cameraStyle: cleanText(value.cameraStyle) || "35mm documentary photography, natural perspective, subtle depth of field",
+    locationAnchors: normalizeStringArray(value.locationAnchors, []).slice(0, 8),
+    characterAnchors: normalizeStringArray(value.characterAnchors, []).slice(0, 8),
+    negativePrompt: cleanText(value.negativePrompt) || "no readable text, no subtitles, no logo, no watermark, no Your Text, no black lower-third bar",
+    reusePolicy: cleanText(value.reusePolicy) || "Each image beat covers 2-5 adjacent sentences; reuse the same visual beat across its sentence range.",
+    topicAnchor: `All visuals stay focused on ${cleanText(topic) || "the topic"} without switching to another subject.`
   };
 }
 

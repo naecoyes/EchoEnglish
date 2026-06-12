@@ -40,9 +40,10 @@ async function generateCoverImageSet({
     const backgroundId = `${finalId}-bg`;
     const variant = finalId === "cover-vertical" ? "vertical" : "youtube";
     const aspectRatio = item.aspectRatio || (variant === "vertical" ? "9:16" : "16:9");
-    let sourcePath = await findExistingCoverBackground(imagesDir, finalId, backgroundId);
+    let sourcePath = await findTrustedCoverBackground(outputDir, backgroundId, item.prompt);
 
     if (!sourcePath) {
+      await deleteCoverBackgroundImages(imagesDir, finalId, backgroundId);
       pushLog(logs, `Generating ${aspectRatio} cover background (${backgroundId}) with ${resolvedProvider}.`);
       const scene = {
         id: backgroundId,
@@ -144,6 +145,42 @@ async function findBatchImage(imagesDir, id) {
 function pushLog(logs, message) {
   if (!Array.isArray(logs)) return;
   logs.push(`[${new Date().toISOString()}] ${message}`);
+}
+
+async function findTrustedCoverBackground(outputDir, backgroundId, prompt) {
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, "image-manifest.json"), "utf8"));
+    const item = (manifest.items || []).find((entry) => entry.sceneId === backgroundId);
+    if (
+      item?.status === "completed"
+      && item?.imagePath
+      && item.prompt === prompt
+      && item.cacheKey === `${item.sceneId}:${item.promptHash || ""}`
+      && await pathExists(item.imagePath)
+    ) {
+      return item.imagePath;
+    }
+  } catch {}
+  return null;
+}
+
+async function deleteCoverBackgroundImages(imagesDir, finalId, backgroundId) {
+  for (const id of [backgroundId, finalId]) {
+    for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+      await fs.unlink(path.join(imagesDir, `${id}${ext}`)).catch(() => {});
+    }
+    let entries = [];
+    try {
+      entries = await fs.readdir(imagesDir);
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(`${id}_batch_`) && /\.(png|jpe?g|webp)$/i.test(entry)) {
+        await fs.unlink(path.join(imagesDir, entry)).catch(() => {});
+      }
+    }
+  }
 }
 
 module.exports = {

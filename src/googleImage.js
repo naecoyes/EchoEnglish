@@ -23,7 +23,12 @@ async function generateImages({ scenes, outputDir, apiKey, baseUrl, model, aspec
         error: "Prompt changed; cached image will be regenerated."
       });
     }
-    const cachedPath = await findExistingImage(imagesDir, scene.id);
+    const cachedPath = !manifestItem?.promptChanged
+      && manifestItem?.status === "completed"
+      && manifestItem?.imagePath
+      && await pathExists(manifestItem.imagePath)
+      ? manifestItem.imagePath
+      : null;
     if (cachedPath) {
       const quality = await validateCachedImage(cachedPath, imagesDir, scene.id);
       if (quality) {

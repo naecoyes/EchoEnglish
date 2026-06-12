@@ -21,6 +21,12 @@ const { writeYouTubeCopy } = require("./youtubeCopy");
 const { assertStoryQuality, inspectStoryQuality } = require("./storyQuality");
 const { buildCoverPromptSet, renderCoverPrompts } = require("./coverPrompts");
 const { generateCoverImageSet, resolveCoverProvider } = require("./coverImages");
+const {
+  applyVisualContinuity,
+  buildSceneContinuityAnchor,
+  inspectImageContinuityManifest,
+  sceneContinuityMetadata
+} = require("./visualContinuity");
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +34,7 @@ async function generateStoryWorkflow(options = {}) {
   const topic = options.topic || "A Rainy Day";
   const minutes = Number(options.minutes || 3);
   const outputRoot = path.resolve(options.outputRoot || options.out || "outputs");
-  const slug = slugify(topic);
+  const slug = slugify(options.slug || topic);
   const outputDir = path.join(outputRoot, slug);
   const logs = options.logs || [];
   const targetAspectRatio = options.videoOrientation === "portrait" ? "9:16" : "16:9";
@@ -54,6 +60,7 @@ async function generateStoryWorkflow(options = {}) {
   if (options.template && !story.template) {
     story.template = options.template;
   }
+  applyVisualContinuity(story, { mode: options.visualContinuityMode });
   story.coverPrompts = buildCoverPromptSet(story);
   assertStoryQuality(story, {
     minimumSections: shouldRequireLongFormQuality(story) ? 8 : 0
@@ -155,6 +162,7 @@ async function generateStoryWorkflow(options = {}) {
     markdown: "script.md",
     subtitles: "subtitles.srt",
     imagePrompts: "image-prompts.md",
+    visualContinuity: "visual-continuity.json",
     coverPrompts: "cover-prompts.md",
     audio: options.skipAudio ? null : "audio.wav",
     music: !options.skipAudio && resolveMusicMode(options.musicMode) === "minimax" ? "music/background.mp3" : null,
@@ -194,6 +202,7 @@ async function generateStoryWorkflow(options = {}) {
     await fs.writeFile(path.join(outputDir, "script.json"), `${JSON.stringify(nextScriptJson, null, 2)}\n`);
     await fs.writeFile(path.join(outputDir, "script.md"), renderMarkdown(story), "utf8");
     await fs.writeFile(path.join(outputDir, "image-prompts.md"), renderImagePrompts(story), "utf8");
+    await fs.writeFile(path.join(outputDir, "visual-continuity.json"), `${JSON.stringify(story.visualContinuity || {}, null, 2)}\n`, "utf8");
     await fs.writeFile(path.join(outputDir, "cover-prompts.md"), renderCoverPrompts(story), "utf8");
     await fs.writeFile(path.join(outputDir, "subtitles.srt"), renderSrt(readingItems), "utf8");
     return nextScriptJson;
@@ -228,32 +237,16 @@ async function generateStoryWorkflow(options = {}) {
         await removePodcastHostImages(outputDir, logs);
       }
       pushLog(logs, `Image API requests: ${scenes.length}; reused across ${story.sections.length} story sections.`);
-      const results = options.imageMode === "google"
-        ? await generateGoogleImages({
-          scenes,
-          outputDir,
-          apiKey: settings.google?.apiKey,
-          baseUrl: settings.google?.baseUrl,
-          model: options.googleImageModel || settings.google?.imageModel,
-          aspectRatio: targetAspectRatio,
-          batchSize: options.batchImageCount || 3,
-          onProgress: (progress) => reportImageProgress(options, logs, progress)
-        })
-        : await generateImages({
-          scenes,
-          outputDir,
-          apiKey: effectiveApiKey,
-          model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
-          aspectRatio: targetAspectRatio,
-          promptOptimizer: true,
-          batchSize: options.batchImageCount || 3,
-          onProgress: (progress) => reportImageProgress(options, logs, progress),
-          fallbackGoogleOptions: {
-            apiKey: settings.google?.apiKey,
-            baseUrl: settings.google?.baseUrl,
-            model: options.googleImageModel || settings.google?.imageModel
-          }
-        });
+      const results = await generateSceneImagesWithFallback({
+        scenes,
+        outputDir,
+        settings,
+        options,
+        logs,
+        effectiveApiKey,
+        effectiveModels,
+        targetAspectRatio
+      });
       if (isPodcastStory(story)) {
         await saveSharedPodcastImages({ outputRoot, outputDir, scenes, logs });
       }
@@ -395,6 +388,7 @@ async function generateStoryWorkflow(options = {}) {
       scriptJson: path.join(outputDir, "script.json"),
       scriptMd: path.join(outputDir, "script.md"),
       imagePrompts: path.join(outputDir, "image-prompts.md"),
+      visualContinuity: path.join(outputDir, "visual-continuity.json"),
       coverPrompts: path.join(outputDir, "cover-prompts.md"),
       subtitles: path.join(outputDir, "subtitles.srt"),
       audio: options.skipAudio ? null : path.join(outputDir, "audio.wav"),
@@ -423,6 +417,71 @@ async function generateCoverImages({ story, outputDir, settings, options, effect
     googleImageModel: options.googleImageModel || settings.google?.imageModel,
     logs
   });
+}
+
+async function generateSceneImagesWithFallback({
+  scenes,
+  outputDir,
+  settings,
+  options,
+  logs,
+  effectiveApiKey,
+  effectiveModels,
+  targetAspectRatio
+}) {
+  if (options.imageMode !== "google") {
+    return await generateImages({
+      scenes,
+      outputDir,
+      apiKey: effectiveApiKey,
+      model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
+      aspectRatio: targetAspectRatio,
+      promptOptimizer: true,
+      batchSize: options.batchImageCount || 3,
+      onProgress: (progress) => reportImageProgress(options, logs, progress),
+      fallbackGoogleOptions: {
+        apiKey: settings.google?.apiKey,
+        baseUrl: settings.google?.baseUrl,
+        model: options.googleImageModel || settings.google?.imageModel
+      }
+    });
+  }
+
+  try {
+    return await generateGoogleImages({
+      scenes,
+      outputDir,
+      apiKey: settings.google?.apiKey,
+      baseUrl: settings.google?.baseUrl,
+      model: options.googleImageModel || settings.google?.imageModel,
+      aspectRatio: targetAspectRatio,
+      batchSize: options.batchImageCount || 3,
+      onProgress: (progress) => reportImageProgress(options, logs, progress)
+    });
+  } catch (error) {
+    const classification = classifyError(error);
+    if (!shouldFallbackGoogleImageToMiniMax(classification, effectiveApiKey)) {
+      throw error;
+    }
+    pushLog(logs, `Google Imagen unavailable (${classification.type}). Falling back to MiniMax image generation for this job.`);
+    return await generateImages({
+      scenes,
+      outputDir,
+      apiKey: effectiveApiKey,
+      model: options.imageModel || effectiveModels.image || MINIMAX_IMAGE_MODEL,
+      aspectRatio: targetAspectRatio,
+      promptOptimizer: true,
+      batchSize: options.batchImageCount || 3,
+      onProgress: (progress) => reportImageProgress(options, logs, progress)
+    });
+  }
+}
+
+function shouldFallbackGoogleImageToMiniMax(classification, minimaxApiKey) {
+  return Boolean(
+    minimaxApiKey
+    && ["rate_limit", "quota_exceeded", "server_error", "network_error"].includes(classification?.type)
+  );
 }
 
 function assignPodcastVoices(readingItems, settings, options) {
@@ -517,9 +576,10 @@ async function assertComposeInputs({ outputDir, story, audioSummary, musicSummar
   }
   if (options.imageMode === "minimax" || options.imageMode === "google") {
     const scenes = getUniqueImageScenes(story, targetAspectRatio);
+    const trustedImages = await loadTrustedImageManifest(outputDir);
     let completed = 0;
     for (const scene of scenes) {
-      if (await findSceneImage(outputDir, scene.id)) completed += 1;
+      if (trustedImages.has(scene.id)) completed += 1;
     }
     if (completed < scenes.length) {
       throw new Error(`Compose blocked: scene images are incomplete (${completed}/${scenes.length}).`);
@@ -532,6 +592,19 @@ async function assertComposeInputs({ outputDir, story, audioSummary, musicSummar
 
 async function findSceneImage(outputDir, sceneId) {
   return findImageInDirectory(path.join(outputDir, "images"), sceneId);
+}
+
+async function loadTrustedImageManifest(outputDir) {
+  const trusted = new Set();
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, "image-manifest.json"), "utf8"));
+    for (const item of manifest.items || []) {
+      if (item?.status !== "completed" || !item.sceneId || !item.imagePath) continue;
+      if (item.cacheKey !== `${item.sceneId}:${item.promptHash || ""}`) continue;
+      if (await pathExists(item.imagePath)) trusted.add(item.sceneId);
+    }
+  } catch {}
+  return trusted;
 }
 
 async function findImageInDirectory(imagesDir, sceneId) {
@@ -603,6 +676,8 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
   if (!skipAudio && musicTrackCount < expectedMusicTracks) {
     warnings.push(`Music generated ${musicTrackCount} tracks, expected ${expectedMusicTracks}.`);
   }
+  const imageManifest = await readJsonIfExists(path.join(outputDir, "image-manifest.json"));
+  warnings.push(...inspectImageContinuityManifest(imageManifest, story));
   const failedTimeline = Math.abs(durationDelta.audioVsSubtitlesSeconds) > 0.5
     || Math.abs(durationDelta.videoVsAudioSeconds) > 0.5;
   warnings.push(...timelineWarnings);
@@ -637,10 +712,19 @@ async function writeQualityReport({ outputDir, story, readingItems, audioSummary
       images: isPodcastStory(story) ? "2 podcast host backgrounds" : "30-45",
       musicTracks: expectedMusicTracks
     },
+    visualContinuity: story.visualContinuity || null,
     warnings
   };
   await fs.writeFile(path.join(outputDir, "quality-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return report;
+}
+
+async function readJsonIfExists(file) {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 async function probeDuration(file) {
@@ -685,14 +769,17 @@ function getUniqueImageScenes(story, targetAspectRatio = "16:9") {
       if (seen.has(key)) continue;
       const moment = getSectionBeatMoment(story, section, beatIndex);
       const beat = imageBeats[beatIndex] || {};
+      const sceneId = buildSceneImageId(baseIndex, variantIndex, beatIndex);
       const imagePrompt = buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio);
+      const continuity = sceneContinuityMetadata(story, section, beatIndex, sceneId);
       seen.set(key, {
-        id: buildSceneImageId(baseIndex, variantIndex, beatIndex),
+        id: sceneId,
         visual: section.visual,
         title: story.title,
         contentMode: story.contentMode,
         templateTitle: story.template?.title,
         visualStyle: story.storyboardDesign?.visualStyle || story.outline?.visualStyle,
+        ...continuity,
         moment,
         durationNote: beat.durationNote || "",
         imagePrompt,
@@ -837,10 +924,12 @@ function buildBeatImagePrompt(story, section, beatIndex, targetAspectRatio = "16
   const countryHistory = isCountryHistoryStory(story);
   const publicBiography = isPublicFigureBiographyStory(story);
   const publicBiographyOverride = publicBiography ? buildPublicBiographyImageOverride(section, moment) : "";
+  const continuityAnchor = buildSceneContinuityAnchor(story, section, beatIndex, targetAspectRatio);
   const parts = [
     `Create one ${targetAspectRatio} photorealistic cinematic still image for an English shadowing video.`,
     `Video title: ${story.title}.`,
     story.template?.title ? `Video type: ${story.template.title}.` : "",
+    continuityAnchor ? `Visual continuity anchor: ${continuityAnchor}` : "",
     `Overall visual style: ${visualStyle}.`,
     publicBiographyOverride ? `Public figure safe scene prompt: ${publicBiographyOverride}` : "",
     !publicBiographyOverride && section.imagePrompt ? `Base scene prompt: ${section.imagePrompt}` : "",
@@ -1045,5 +1134,6 @@ module.exports = {
   getUniqueImageScenes,
   hasScenePeople,
   resolveTtsProvider,
-  formatDuration
+  formatDuration,
+  writeQualityReport
 };

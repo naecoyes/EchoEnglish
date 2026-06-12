@@ -185,6 +185,7 @@ outputs/{slug}/
   subtitles.srt
   audio.wav
   image-prompts.md
+  visual-continuity.json
   youtube-copy.md
   youtube-copy.json
   audio-manifest.json
@@ -359,6 +360,19 @@ Preview includes:
 - `Generate Covers` to regenerate only the two cover images.
 - `DL YouTube Cover` to download the landscape cover.
 - `DL Vertical Cover` to download the short-video cover.
+
+## Visual Continuity
+
+EchoEnglish now uses **Documentary Continuity** by default. It does not assume a text-to-image model can reproduce the exact same face in every scene. Instead, each draft and output includes `visual-continuity.json`, which defines:
+
+- shared visual style, color palette, camera style, and negative prompt;
+- character or subject anchors for the whole video;
+- recurring location/object anchors;
+- an image reuse policy where one image beat covers 2-5 adjacent sentences.
+
+Scene image prompts are built from the video continuity anchor plus the scene moment. This makes generated videos feel more consistent through repeated environments, objects, wardrobe colors, silhouettes, side/back views, and documentary context shots. Public figure and company/history templates avoid exact-face demands unless a verified reference image is supplied, reducing random portrait drift and incorrect celebrity likenesses.
+
+`image-manifest.json` records `continuityMode`, `continuityGroupId`, `characterAnchor`, and `locationAnchor` for every image. `timeline-manifest.json` records the `continuityGroupId` used by each rendered frame, so you can debug which sentences share the same visual beat.
 
 ## Video UI Rendering
 

@@ -1,3 +1,5 @@
+const { buildSceneContinuityAnchor } = require("./visualContinuity");
+
 function buildReadingItems(story) {
   const items = [];
   let counter = 1;
@@ -181,6 +183,7 @@ function buildPromptBeatImagePrompt(story, section, beatIndex) {
     ? sentences.slice(beat.sentenceStart, beat.sentenceEnd + 1).join(" ")
     : sentences.join(" ");
   return [
+    buildSceneContinuityAnchor(story, section, beatIndex),
     beat?.imagePrompt || section.imagePrompt,
     moment ? `Specific moment for this background: ${moment}` : "",
     beat?.durationNote ? `Timing note: ${beat.durationNote}` : "",

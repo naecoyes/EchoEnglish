@@ -49,6 +49,7 @@ const OUTPUT_LABELS = {
   coverVertical: "Vertical Cover",
   coverPrompts: "Cover Prompts",
   imagePrompts: "Scene Prompts",
+  visualContinuity: "Visual Continuity",
   scriptJson: "Structured Data",
   jobState: "Job State",
   audioManifest: "Audio Manifest",
@@ -98,7 +99,7 @@ function App() {
   const [job, setJob] = useState(null);
   const [logs, setLogs] = useState(["Waiting for a generation job."]);
   const [status, setStatus] = useState("idle");
-  const [form, setForm] = useState({ topic: "A Rainy Day in London", minutes: "15", templateId: DEFAULT_TEMPLATE_ID });
+  const [form, setForm] = useState({ topic: "A Rainy Day in London", minutes: "15", templateId: DEFAULT_TEMPLATE_ID, visualContinuityMode: "documentary" });
   const [draftStartedAt, setDraftStartedAt] = useState(null);
 
   const outputSlug = query.get("output");
@@ -127,7 +128,8 @@ function App() {
         ...current,
         topic: saved.topic || saved.draft.topic || current.topic,
         minutes: "15",
-        templateId: saved.templateId || saved.draft.template?.id || current.templateId
+        templateId: saved.templateId || saved.draft.template?.id || current.templateId,
+        visualContinuityMode: saved.visualContinuityMode || saved.draft.visualContinuity?.mode || current.visualContinuityMode || "documentary"
       }));
       setOutline(saved.outline || saved.draft.outline || null);
       setDraft(saved.draft);
@@ -147,13 +149,14 @@ function App() {
       savedAt: new Date().toISOString(),
       topic,
       templateId: form.templateId,
+      visualContinuityMode: form.visualContinuityMode || "documentary",
       outline,
       draft,
       draftMeta,
       feedback: draftFeedback
     };
     window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(saved));
-  }, [draft, draftMeta, draftFeedback, form.topic, form.templateId, outline]);
+  }, [draft, draftMeta, draftFeedback, form.topic, form.templateId, form.visualContinuityMode, outline]);
 
   async function refreshConfig() {
     return fetchJson("/api/config")
@@ -294,7 +297,7 @@ function App() {
         ]);
         const result = await fetchJson("/api/story-draft", {
           method: "POST",
-          body: JSON.stringify({ topic, minutes, templateId: form.templateId })
+          body: JSON.stringify({ topic, minutes, templateId: form.templateId, visualContinuityMode: form.visualContinuityMode || "documentary" })
         });
         setOutline(result.outline);
         setDraft(result.draft);
@@ -328,7 +331,7 @@ function App() {
       ]);
       const started = await fetchJson("/api/generate-story-video", {
         method: "POST",
-        body: JSON.stringify({ topic, minutes, templateId: form.templateId, outline, storyDraft: draft })
+        body: JSON.stringify({ topic, minutes, templateId: form.templateId, visualContinuityMode: form.visualContinuityMode || "documentary", outline, storyDraft: draft })
       });
       const nextJob = {
         id: started.id,
@@ -361,6 +364,7 @@ function App() {
           topic,
           minutes: "15",
           templateId: form.templateId,
+          visualContinuityMode: form.visualContinuityMode || "documentary",
           draft,
           feedback: draftFeedback
         })
@@ -525,6 +529,10 @@ function AppHeader({ config, status, route }) {
   return (
     <header className="app-header glass-card">
       <div>
+        <div className="brand-row">
+          <img className="brand-logo" src="/icons/logo-192.png" alt="EchoEnglish" />
+          <span>ECHOENGLISH</span>
+        </div>
         <h1>{meta.title}</h1>
         <p className="header-copy">{meta.subtitle}</p>
       </div>
@@ -600,7 +608,7 @@ function GlassNavigation({ route, navigate }) {
   return (
     <nav className="glass-nav" aria-label="Main navigation">
       <div className="nav-brand">
-        <span>SV</span>
+        <img src="/icons/logo-192.png" alt="EchoEnglish" />
       </div>
       <div className="nav-items" style={{ "--active-index": safeIndex }}>
         <div className="nav-active-indicator" aria-hidden="true" />
@@ -625,6 +633,22 @@ function GlassNavigation({ route, navigate }) {
       </div>
     </nav>
   );
+}
+
+function continuityModeTitle(mode) {
+  if (mode === "reference-character") return "Reference character";
+  if (mode === "fixed-hero-images") return "Fixed hero images";
+  return "Documentary continuity";
+}
+
+function continuityModeSummary(mode) {
+  if (mode === "reference-character") {
+    return "Use reference assets when available; otherwise fall back to documentary-safe side, back, and context shots.";
+  }
+  if (mode === "fixed-hero-images") {
+    return "Generate fewer strong visuals and reuse them across adjacent narration for maximum stability.";
+  }
+  return "Use shared visual anchors, recurring locations, objects, side views, and 2-5 sentence image beats to reduce portrait drift.";
 }
 
 function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFeedback, draftMeta, apiReady, config, logs, status, draftStartedAt, onSubmit, onRevise }) {
@@ -681,6 +705,21 @@ function GeneratePage({ form, setForm, outline, draft, draftFeedback, setDraftFe
               <span>{activeTemplate.summary}</span>
             </div>
           )}
+          <label>
+            Visual Continuity
+            <select
+              value={form.visualContinuityMode || "documentary"}
+              onChange={(event) => setForm({ ...form, visualContinuityMode: event.target.value })}
+            >
+              <option value="documentary">Documentary Continuity</option>
+              <option value="reference-character">Reference Character</option>
+              <option value="fixed-hero-images">Fixed Hero Images</option>
+            </select>
+          </label>
+          <div className="template-summary">
+            <strong>{continuityModeTitle(form.visualContinuityMode)}</strong>
+            <span>{continuityModeSummary(form.visualContinuityMode)}</span>
+          </div>
           <label>
             Target Minutes
             <input
@@ -859,6 +898,8 @@ function PreviewPage({ output, onRepairDraftCreated, onRetry }) {
     setCoverOutputs({
       coverYoutube: output?.outputs?.coverYoutube || null,
       coverVertical: output?.outputs?.coverVertical || null,
+      customCoverYoutube: output?.outputs?.customCoverYoutube || null,
+      customCoverVertical: output?.outputs?.customCoverVertical || null,
       coverPrompts: output?.outputs?.coverPrompts || null
     });
     setStats(null);
@@ -944,6 +985,8 @@ function PreviewPage({ output, onRepairDraftCreated, onRetry }) {
       setCoverOutputs({
         coverYoutube: result.outputs?.coverYoutube || result.coverYoutube || null,
         coverVertical: result.outputs?.coverVertical || result.coverVertical || null,
+        customCoverYoutube: result.outputs?.customCoverYoutube || null,
+        customCoverVertical: result.outputs?.customCoverVertical || null,
         coverPrompts: result.outputs?.coverPrompts || result.coverPrompts || null
       });
     } catch (error) {
@@ -951,8 +994,42 @@ function PreviewPage({ output, onRepairDraftCreated, onRetry }) {
     }
   }
 
-  const activeCoverYoutube = coverOutputs.coverYoutube || output?.outputs?.coverYoutube;
-  const activeCoverVertical = coverOutputs.coverVertical || output?.outputs?.coverVertical;
+  async function handleUploadCustomCover(event, orientation) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!slug || !file) return;
+    const label = orientation === "portrait" ? "vertical" : "YouTube";
+    setCoverState(`Uploading custom ${label} cover and re-rendering ${orientation} video. Audio stays unchanged.`);
+    try {
+      const form = new FormData();
+      form.append("orientation", orientation);
+      form.append("cover", file);
+      const response = await fetch(`/api/outputs/${encodeURIComponent(slug)}/upload-custom-cover`, {
+        method: "POST",
+        body: form
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.error) {
+        throw new Error(result.error || `Upload failed: ${response.status}`);
+      }
+      setCoverOutputs({
+        coverYoutube: result.outputs?.coverYoutube || output?.outputs?.coverYoutube || null,
+        coverVertical: result.outputs?.coverVertical || output?.outputs?.coverVertical || null,
+        customCoverYoutube: result.outputs?.customCoverYoutube || null,
+        customCoverVertical: result.outputs?.customCoverVertical || null,
+        coverPrompts: result.outputs?.coverPrompts || output?.outputs?.coverPrompts || null
+      });
+      setVideoVersion(Date.now());
+      setCoverState(`Custom ${label} cover applied to the first 15 seconds. Audio was not changed.`);
+      if (orientation === "portrait") setIsPlayingPortrait(true);
+      if (orientation === "landscape") setIsPlayingPortrait(false);
+    } catch (error) {
+      setCoverState(error.message);
+    }
+  }
+
+  const activeCoverYoutube = coverOutputs.customCoverYoutube || output?.outputs?.customCoverYoutube || coverOutputs.coverYoutube || output?.outputs?.coverYoutube;
+  const activeCoverVertical = coverOutputs.customCoverVertical || output?.outputs?.customCoverVertical || coverOutputs.coverVertical || output?.outputs?.coverVertical;
 
   return (
     <section className="glass-card content-panel preview-panel">
@@ -1009,6 +1086,14 @@ function PreviewPage({ output, onRepairDraftCreated, onRetry }) {
             <div className="toolbar-group">
               <button className="ghost-action" type="button" onClick={handleRerenderUi}>Re-render UI</button>
               <button className="ghost-action" type="button" onClick={handleRegenerateCover}>Generate Covers</button>
+              <label className="ghost-action file-upload-action">
+                Upload YouTube Cover
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleUploadCustomCover(event, "landscape")} />
+              </label>
+              <label className="ghost-action file-upload-action">
+                Upload Vertical Cover
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleUploadCustomCover(event, "portrait")} />
+              </label>
               <button className="ghost-action" type="button" onClick={handleAnalyzeQuality}>Analyze Quality</button>
               <button className="ghost-action" type="button" onClick={handleCreateRepairDraft}>Create Repair Draft</button>
             </div>

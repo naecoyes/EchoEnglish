@@ -10,6 +10,11 @@ const { renderCoverOverlayContent } = require("./coverRenderer");
 const execFileAsync = promisify(execFile);
 const { runFfmpeg } = require("./ffmpegGateway");
 let cachedFfmpegEncoders = null;
+const CUSTOM_COVER_SECONDS = 15;
+const CUSTOM_COVER_IDS = {
+  landscape: "custom-cover-youtube",
+  portrait: "custom-cover-vertical"
+};
 
 function getLayout(orientation) {
   const isPortrait = orientation === "portrait";
@@ -34,6 +39,12 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
   }
   const audioDuration = await probeMediaDuration(audioPath);
   alignFramesToAudioDuration(frames, audioDuration);
+  const customCoverImageId = CUSTOM_COVER_IDS[orientation] || CUSTOM_COVER_IDS.landscape;
+  if (await findImageBySceneId(outputDir, customCoverImageId)) {
+    applyCustomCoverIntro(frames, customCoverImageId, CUSTOM_COVER_SECONDS);
+    pushLog(logs, `[${orientation}] Applying uploaded custom cover for the first ${CUSTOM_COVER_SECONDS} seconds.`);
+  }
+  const trustedImages = await loadTrustedImageMap(outputDir);
   const sharp = loadSharp();
 
   const totalFrames = frames.length;
@@ -46,12 +57,15 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
       await onProgress({ orientation, completed: index + 1, total: totalFrames, phase: "frames" });
     }
 
-    const frameForImage = frame.kind === "cover"
+    const frameForImage = frame.customCoverImageId
+      ? { ...frame, coverImageId: frame.customCoverImageId }
+      : frame.kind === "cover"
       ? { ...frame, coverImageId: orientation === "portrait" ? "cover-vertical" : "cover-youtube" }
       : frame;
     const sceneImageId = resolveFrameSceneImageId(story, frameForImage);
-    const existingImage = await findExistingSceneImage(outputDir, story, frameForImage);
+    const existingImage = await findExistingSceneImage(outputDir, story, frameForImage, 0, trustedImages);
     frame.sceneImageId = sceneImageId;
+    frame.continuityGroupId = resolveFrameContinuityGroupId(story, frameForImage);
     frame.imagePath = existingImage || null;
     const imageDataUri = existingImage ? await imageToDataUri(existingImage) : null;
     const svg = renderLearningFrame({ story, frame, frameIndex: index, imageDataUri, layout, imageAspectRatio });
@@ -109,16 +123,18 @@ async function composeStoryVideo({ story, readingItems, outputDir, audioPath, mu
     );
   }
 
-  ffmpegArgs.push(...encoder.args, "-c:a", "aac", "-shortest", videoPath);
+  ffmpegArgs.push(...encoder.args, "-c:a", "aac", "-shortest");
+  if (audioDuration > 0) {
+    ffmpegArgs.push("-t", audioDuration.toFixed(3));
+  }
+  ffmpegArgs.push(videoPath);
 
   try {
     await runFfmpeg(ffmpegArgs, { maxBuffer: 1024 * 1024 * 16 });
   } catch (error) {
     if (encoder.id === "cpu-libx264") throw error;
     pushLog(logs, `${encoder.label} failed during encode. Falling back to CPU libx264.`);
-    const fallbackArgs = [...ffmpegArgs];
-    const videoPathIndex = fallbackArgs.lastIndexOf(videoPath);
-    fallbackArgs.splice(videoPathIndex - encoder.args.length - 3, encoder.args.length, ...encoderArgs("cpu-libx264").args);
+    const fallbackArgs = replaceArgSequence(ffmpegArgs, encoder.args, encoderArgs("cpu-libx264").args);
     await runFfmpeg(fallbackArgs, { maxBuffer: 1024 * 1024 * 16 });
   }
 
@@ -164,11 +180,32 @@ async function probeMediaDuration(file) {
 
 function alignFramesToAudioDuration(frames, audioDuration) {
   if (!frames.length || !Number.isFinite(audioDuration) || audioDuration <= 0) return;
+  const safeEnd = Number(audioDuration);
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    if (Number(frames[index].startSeconds || 0) >= safeEnd - 0.001) {
+      frames.splice(index, 1);
+    }
+  }
+  if (!frames.length) return;
+
+  for (const frame of frames) {
+    const start = Number(frame.startSeconds || 0);
+    const end = Number(frame.endSeconds || start);
+    if (end > safeEnd) {
+      frame.endSeconds = safeEnd;
+      frame.durationSeconds = Math.max(0.001, safeEnd - start);
+    }
+  }
+
+  while (frames.length && Number(frames[frames.length - 1].durationSeconds || 0) <= 0.001) {
+    frames.pop();
+  }
+  if (!frames.length) return;
+
   const last = frames[frames.length - 1];
-  const minimumEnd = Number(last.startSeconds || 0) + 0.5;
-  const nextEnd = Math.max(minimumEnd, audioDuration);
-  last.endSeconds = nextEnd;
-  last.durationSeconds = Math.max(0.5, nextEnd - Number(last.startSeconds || 0));
+  const lastStart = Number(last.startSeconds || 0);
+  last.endSeconds = safeEnd;
+  last.durationSeconds = Math.max(0.001, safeEnd - lastStart);
 }
 
 async function writeTimelineManifest({ outputDir, frames, audioDuration, orientation, videoPath }) {
@@ -193,6 +230,7 @@ async function writeTimelineManifest({ outputDir, frames, audioDuration, orienta
       endSeconds: roundSeconds(frame.endSeconds),
       durationSeconds: roundSeconds(frame.durationSeconds),
       sceneImageId: frame.sceneImageId || null,
+      continuityGroupId: frame.continuityGroupId || null,
       imagePath: frame.imagePath || null,
       isVocabularyReview: frame.kind === "vocab-review"
     }))
@@ -256,6 +294,18 @@ function encoderArgs(id) {
     requires: "libx264",
     args: ["-c:v", "libx264", "-preset", "slow", "-crf", "16"] // Visually lossless, best quality
   };
+}
+
+function replaceArgSequence(args, from, to) {
+  const next = [...args];
+  for (let index = 0; index <= next.length - from.length; index += 1) {
+    const matched = from.every((value, offset) => next[index + offset] === value);
+    if (matched) {
+      next.splice(index, from.length, ...to);
+      return next;
+    }
+  }
+  return next;
 }
 
 async function getFfmpegEncoders() {
@@ -328,6 +378,16 @@ function buildLearningFrames(story, readingItems) {
   });
 
   return frames.filter((frame) => frame.durationSeconds > 0.2);
+}
+
+function applyCustomCoverIntro(frames, customCoverImageId, seconds = CUSTOM_COVER_SECONDS) {
+  const limit = Math.max(0, Number(seconds) || 0);
+  if (!limit || !customCoverImageId) return;
+  frames.forEach((frame) => {
+    if ((frame.startSeconds || 0) >= limit) return;
+    frame.customCoverImageId = customCoverImageId;
+    frame.customCoverIntro = true;
+  });
 }
 
 function getFrameEndSeconds(readingItems, index) {
@@ -430,11 +490,16 @@ function baseFrame(item, sectionIndex, index, extra) {
   };
 }
 
-async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIndex = 0) {
+async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIndex = 0, trustedImages = null) {
+  if (typeof frameOrIndex === "object" && frameOrIndex.customCoverImageId) {
+    const customCover = await findImageBySceneId(outputDir, frameOrIndex.customCoverImageId);
+    if (customCover) return customCover;
+  }
+
   if (isPodcastStory(story)) {
     const speaker = typeof frameOrIndex === "object" ? frameOrIndex.speaker : null;
     const podcastSceneId = speaker === "host-b" ? "podcast-host-b" : "podcast-host-a";
-    const podcastImage = await findImageBySceneId(outputDir, podcastSceneId);
+    const podcastImage = await findTrustedSceneImage(outputDir, podcastSceneId, trustedImages);
     if (podcastImage) return podcastImage;
   }
 
@@ -442,12 +507,13 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
   if (typeof frameOrIndex === "object" && frameOrIndex.kind === "cover") {
     const preferredCoverId = frameOrIndex.coverImageId || "cover-youtube";
     for (const coverId of [preferredCoverId, "cover-youtube", "cover-vertical", "cover"]) {
-      const coverImages = await findBatchImages(imagesDir, coverId);
-      if (coverImages.length > 0) return coverImages[0];
+      const coverBackground = await findTrustedSceneImage(outputDir, `${coverId}-bg`, trustedImages);
+      if (!coverBackground) continue;
       for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
         const direct = path.join(imagesDir, `${coverId}${ext}`);
         if (await pathExists(direct)) return direct;
       }
+      return coverBackground;
     }
   }
 
@@ -461,34 +527,20 @@ async function findExistingSceneImage(outputDir, story, frameOrIndex, sentenceIn
 
   const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
   const beatSceneId = `${sceneBase}-${String(beatIndex + 1).padStart(2, "0")}`;
-  const beatBatchImages = await findBatchImages(imagesDir, beatSceneId);
-  if (beatBatchImages.length > 0) {
-    return beatBatchImages[0];
-  }
+  const beatImage = await findTrustedSceneImage(outputDir, beatSceneId, trustedImages);
+  if (beatImage) return beatImage;
 
-  const sceneBatchImages = await findBatchImages(imagesDir, sceneBase);
-  if (sceneBatchImages.length > 0) {
-    const sentences = section.sentences || [];
-    const sentenceCount = Math.max(1, sentences.length);
-    const batchIndex = Math.floor((frameSentenceIndex / sentenceCount) * sceneBatchImages.length);
-    return sceneBatchImages[Math.min(batchIndex, sceneBatchImages.length - 1)];
-  }
+  const sceneImage = await findTrustedSceneImage(outputDir, sceneBase, trustedImages);
+  if (sceneImage) return sceneImage;
 
-  const beatBase = path.join(imagesDir, beatSceneId);
-  const variantBase = path.join(imagesDir, sceneBase);
-  const legacyBase = path.join(imagesDir, `scene-${String(baseIndex + 1).padStart(3, "0")}`);
-  const candidates = [
-    `${beatBase}.png`, `${beatBase}.jpg`, `${beatBase}.jpeg`, `${beatBase}.webp`,
-    `${variantBase}.png`, `${variantBase}.jpg`, `${variantBase}.jpeg`, `${variantBase}.webp`,
-    `${legacyBase}.png`, `${legacyBase}.jpg`, `${legacyBase}.jpeg`, `${legacyBase}.webp`
-  ];
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
-  }
   return null;
 }
 
 function resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex = 0) {
+  if (typeof frameOrIndex === "object" && frameOrIndex.customCoverImageId) {
+    return frameOrIndex.customCoverImageId;
+  }
+
   if (typeof frameOrIndex === "object" && frameOrIndex.kind === "cover") {
     return frameOrIndex.coverImageId || "cover-youtube";
   }
@@ -509,6 +561,20 @@ function resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex = 0) {
   return `${sceneBase}-${String(beatIndex + 1).padStart(2, "0")}`;
 }
 
+function resolveFrameContinuityGroupId(story, frameOrIndex, sentenceIndex = 0) {
+  if (typeof frameOrIndex === "object" && frameOrIndex.kind === "cover") {
+    return frameOrIndex.coverImageId || "cover";
+  }
+  if (isPodcastStory(story)) return resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex);
+  const index = typeof frameOrIndex === "object" ? frameOrIndex.sectionIndex : frameOrIndex;
+  const frameSentenceIndex = typeof frameOrIndex === "object" ? frameOrIndex.sentenceIndex : sentenceIndex;
+  const section = story.sections[index] || {};
+  const beats = getSectionImageBeats(section);
+  const beatIndex = getImageBeatIndexForSentence(section, frameSentenceIndex, story);
+  const beat = beats[beatIndex] || {};
+  return beat.continuityGroupId || section.continuityGroupId || resolveFrameSceneImageId(story, frameOrIndex, sentenceIndex);
+}
+
 async function findBatchImages(imagesDir, sceneBase) {
   const prefix = `${sceneBase}_batch_`;
   try {
@@ -527,6 +593,27 @@ async function findBatchImages(imagesDir, sceneBase) {
   } catch {
     return [];
   }
+}
+
+async function loadTrustedImageMap(outputDir) {
+  const map = new Map();
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, "image-manifest.json"), "utf8"));
+    for (const item of manifest.items || []) {
+      if (item?.status !== "completed" || !item.sceneId || !item.imagePath) continue;
+      if (item.cacheKey !== `${item.sceneId}:${item.promptHash || ""}`) continue;
+      if (!await pathExists(item.imagePath)) continue;
+      map.set(item.sceneId, item.imagePath);
+    }
+  } catch {}
+  return map;
+}
+
+async function findTrustedSceneImage(outputDir, sceneId, trustedImages = null) {
+  const map = trustedImages || await loadTrustedImageMap(outputDir);
+  const trusted = map.get(sceneId);
+  if (trusted && await pathExists(trusted)) return trusted;
+  return null;
 }
 
 function getImageBeatIndexForSentence(section, sentenceIndex = 0, story = null) {
@@ -583,15 +670,21 @@ function isFinalCoverImage(filePath) {
   return filename === "cover-youtube.png" || filename === "cover-vertical.png";
 }
 
+function isCustomCoverImage(filePath) {
+  const filename = path.basename(String(filePath || "")).toLowerCase();
+  return /^custom-cover-(youtube|vertical)\.(png|jpe?g|webp)$/.test(filename);
+}
+
 function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout, imageAspectRatio = "16:9" }) {
   const { W, H, CAPTION_Y, CAPTION_H, CAPTION_W, CAPTION_X } = layout;
   const palette = getPalette(frameIndex);
   const pad = Math.round(W * 0.04);
   const usingFinalCoverImage = frame.kind === "cover" && isFinalCoverImage(frame.imagePath);
+  const usingCustomCoverIntro = Boolean(frame.customCoverIntro) && isCustomCoverImage(frame.imagePath);
   const needsCoverOverlay = frame.kind === "cover" && !isFinalCoverImage(frame.imagePath);
   let imageLayer = "";
   if (imageDataUri) {
-    if (usingFinalCoverImage) {
+    if (usingFinalCoverImage || usingCustomCoverIntro) {
       imageLayer = `<image href="${imageDataUri}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`;
     } else if (layout.isPortrait) {
       const bgW = Math.round(layout.W * 1.1);
@@ -685,15 +778,15 @@ function renderLearningFrame({ story, frame, frameIndex, imageDataUri, layout, i
   </defs>
   <rect width="${W}" height="${H}" fill="#061329"/>
   ${imageLayer}
-  <rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.16"/>
-  ${frame.kind !== "cover" && frame.kind !== "vocab-review" ? `<rect x="0" y="${Math.round(H * 0.838)}" width="${W}" height="${Math.round(H * 0.162)}" fill="url(#bottomCleanGradient)"/>` : ""}
-  ${needsCoverOverlay ? renderCoverFallbackOverlay(story, layout) : ""}
-  ${frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame, layout) : ""}
-  ${frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
+  ${usingCustomCoverIntro ? "" : `<rect x="0" y="0" width="${W}" height="${H}" fill="#000" opacity="0.16"/>`}
+  ${!usingCustomCoverIntro && frame.kind !== "cover" && frame.kind !== "vocab-review" ? `<rect x="0" y="${Math.round(H * 0.838)}" width="${W}" height="${Math.round(H * 0.162)}" fill="url(#bottomCleanGradient)"/>` : ""}
+  ${!usingCustomCoverIntro && needsCoverOverlay ? renderCoverFallbackOverlay(story, layout) : ""}
+  ${!usingCustomCoverIntro && frame.kind === "vocab-review" ? renderVocabularyReviewOverlay(frame, layout) : ""}
+  ${!usingCustomCoverIntro && frame.kind !== "cover" && frame.kind !== "vocab-review" && frame.isPodcast ? `
   ${renderPodcastHosts(frame, layout)}
   ${frame.vocabWord ? renderVocabularyOverlay(frame, { podcast: true, layout }) : ""}
   ${renderPodcastCaption(frame, layout)}` : ""}
-  ${frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
+  ${!usingCustomCoverIntro && frame.kind !== "cover" && frame.kind !== "vocab-review" && !frame.isPodcast ? `
   ${frame.kind === "vocabulary" || frame.vocabWord ? renderVocabularyOverlay(frame, { layout }) : ""}
   ${renderBottomText(frame, layout)}` : ""}
 </svg>`;
@@ -937,21 +1030,26 @@ function estimateTextWidth(text, fontSize, isChinese = false) {
 
 function renderBottomText(frame, layout) {
   const CAPTION_Y = layout.CAPTION_Y;
-  const CAPTION_H = layout.CAPTION_H;
 
-  const wrapLen = layout.isPortrait ? 32 : 46;
-  const chineseWrapLen = layout.isPortrait ? 28 : 42;
-  const englishLines = wrapWords(frame.english || "", wrapLen).slice(0, 3);
-  const chineseLines = wrapMixed(frame.chinese || "", chineseWrapLen).slice(0, 2);
+  const panelPadX = layout.isPortrait ? 48 : 64;
+  const panelPadY = layout.isPortrait ? 28 : 34;
+  const maxTextWidth = Math.max(
+    layout.W * (layout.isPortrait ? 0.50 : 0.48),
+    Math.min(
+      layout.CAPTION_W - panelPadX * 2 - (layout.isPortrait ? 28 : 64),
+      layout.W * (layout.isPortrait ? 0.66 : 0.62)
+    )
+  );
+  const englishCaption = fitEnglishCaption(frame.english || "", layout, maxTextWidth);
+  const englishLines = englishCaption.lines;
+  const englishFont = englishCaption.fontSize;
 
-  const englishFont = layout.isPortrait
-    ? (englishLines.length > 2 ? 46 : 52)
-    : (englishLines.length > 2 ? 50 : 58);
-  const chineseFont = layout.isPortrait ? 36 : 36;
+  const chineseFont = layout.isPortrait ? 30 : 32;
+  const chineseLines = wrapMixedByWidth(frame.chinese || "", chineseFont, maxTextWidth, true).slice(0, 2);
 
-  const englishLineHeight = Math.round(englishFont * 1.65);
-  const chineseLineHeight = Math.round(chineseFont * 1.75);
-  const gap = layout.isPortrait ? 30 : 42;
+  const englishLineHeight = Math.round(englishFont * 1.48);
+  const chineseLineHeight = Math.round(chineseFont * 1.58);
+  const gap = layout.isPortrait ? 30 : 38;
 
   const englishBlockHeight = englishFont + Math.max(0, englishLines.length - 1) * englishLineHeight;
   const chineseBlockHeight = chineseFont + Math.max(0, chineseLines.length - 1) * chineseLineHeight;
@@ -964,8 +1062,6 @@ function renderBottomText(frame, layout) {
     ...englishLines.map((line) => estimateTextWidth(line, englishFont)),
     ...chineseLines.map((line) => estimateTextWidth(line, chineseFont, true))
   );
-  const panelPadX = layout.isPortrait ? 48 : 64;
-  const panelPadY = layout.isPortrait ? 28 : 34;
   const panelW = Math.min(layout.CAPTION_W, Math.max(layout.W * (layout.isPortrait ? 0.70 : 0.48), maxLineWidth + panelPadX * 2));
   const panelX = Math.round((layout.W - panelW) / 2);
   const panelY = Math.round(top - panelPadY);
@@ -973,9 +1069,22 @@ function renderBottomText(frame, layout) {
   const panelRx = layout.isPortrait ? 24 : 28;
 
   return `
-  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="${panelRx}" fill="#000000" opacity="0.72"/>
-  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont, layout, { lineBackground: false })}
-  ${renderChineseCaptionLinesAt(chineseLines, frame.vocabTranslation, chineseY, chineseFont, layout.W / 2, { lineBackground: false })}`;
+  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="${panelRx}" fill="#000000" opacity="0.64"/>
+  ${renderEnglishCaptionLines(englishLines, frame.highlightedTerm, englishY, englishFont, layout, { lineBackground: false, lineHeight: englishLineHeight })}
+  ${renderChineseCaptionLinesAt(chineseLines, frame.vocabTranslation, chineseY, chineseFont, layout.W / 2, { lineBackground: false, lineHeight: chineseLineHeight, highlightStyle: "text" })}`;
+}
+
+function fitEnglishCaption(text, layout, maxWidth) {
+  const baseFont = layout.isPortrait ? 48 : 54;
+  const minFont = layout.isPortrait ? 34 : 40;
+  for (let fontSize = baseFont; fontSize >= minFont; fontSize -= 2) {
+    const lines = wrapWordsByWidth(text, fontSize, maxWidth);
+    if (lines.length <= 3) return { lines, fontSize };
+  }
+  return {
+    lines: wrapWordsByWidth(text, minFont, maxWidth).slice(0, 3),
+    fontSize: minFont
+  };
 }
 
 function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize, layout, options = {}) {
@@ -985,11 +1094,12 @@ function renderEnglishCaptionLines(lines, highlightedTerm, startY, fontSize, lay
 function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, centerX, options = {}) {
   const normalizedTerm = highlightedTerm ? normalizeTermForMatch(highlightedTerm) : null;
   const showLineBackground = options.lineBackground !== false;
+  const lineHeight = Number(options.lineHeight || fontSize * 1.65);
   const texts = [];
   const shadow = `filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.9))"`;
 
   lines.forEach((line, index) => {
-    const y = startY + index * (fontSize * 1.65);
+    const y = startY + index * lineHeight;
 
     if (normalizedTerm) {
       const match = findTermInLine(line, normalizedTerm);
@@ -997,6 +1107,8 @@ function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, c
         const before = line.slice(0, match.start);
         const term = line.slice(match.start, match.end);
         const after = line.slice(match.end);
+        const afterNeedsGap = /^\s+/.test(after);
+        const afterText = afterNeedsGap ? `\u00A0\u00A0${after.trimStart()}` : after;
 
         // Measure widths to position highlight rect precisely
         const beforeW = estimateTextWidth(before, fontSize);
@@ -1004,11 +1116,11 @@ function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, c
         const totalW = estimateTextWidth(line, fontSize);
         const lineStartX = centerX - totalW / 2;
         const termX = lineStartX + beforeW;
-        const hPad = fontSize * 0.18;
-        const hH = fontSize * 1.18;
-        const hY = y - fontSize * 0.88;
+        const hPad = fontSize * 0.22;
+        const hH = fontSize * 1.12;
+        const hY = y - fontSize * 0.84;
         texts.push(`<rect x="${termX - hPad}" y="${hY}" width="${termW + hPad * 2}" height="${hH}" rx="${hH * 0.28}" fill="#facc15"/>`);
-        texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" ${shadow}><tspan fill="#ffffff">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#ffffff">${escapeXml(after)}</tspan></text>`);
+        texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" ${shadow}><tspan fill="#ffffff">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#ffffff">${escapeXml(afterText)}</tspan></text>`);
         return;
       }
     }
@@ -1020,11 +1132,13 @@ function renderEnglishCaptionLinesAt(lines, highlightedTerm, startY, fontSize, c
 
 function renderChineseCaptionLinesAt(lines, vocabTranslation, startY, fontSize, centerX, options = {}) {
   const showLineBackground = options.lineBackground !== false;
+  const lineHeight = Number(options.lineHeight || fontSize * 1.75);
+  const highlightStyle = options.highlightStyle || "text";
   const texts = [];
   const shadow = `filter="drop-shadow(0px 1px 3px rgba(0,0,0,0.95))"`;
 
   lines.forEach((line, index) => {
-    const y = startY + index * (fontSize * 1.75);
+    const y = startY + index * lineHeight;
 
     if (vocabTranslation && line.includes(vocabTranslation)) {
       const matchStart = line.indexOf(vocabTranslation);
@@ -1033,16 +1147,20 @@ function renderChineseCaptionLinesAt(lines, vocabTranslation, startY, fontSize, 
       const term = line.slice(matchStart, matchEnd);
       const after = line.slice(matchEnd);
 
-      const beforeW = estimateTextWidth(before, fontSize, true);
-      const termW = estimateTextWidth(term, fontSize, true);
-      const totalW = estimateTextWidth(line, fontSize, true);
-      const lineStartX = centerX - totalW / 2;
-      const termX = lineStartX + beforeW;
-      const hPad = fontSize * 0.22;
-      const hH = fontSize * 1.18;
-      const hY = y - fontSize * 0.88;
-      texts.push(`<rect x="${termX - hPad}" y="${hY}" width="${termW + hPad * 2}" height="${hH}" rx="${hH * 0.28}" fill="#facc15"/>`);
-      texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" ${shadow}><tspan fill="#e2e8f0">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#e2e8f0">${escapeXml(after)}</tspan></text>`);
+      if (highlightStyle === "pill") {
+        const beforeW = estimateTextWidth(before, fontSize, true);
+        const termW = estimateTextWidth(term, fontSize, true);
+        const totalW = estimateTextWidth(line, fontSize, true);
+        const lineStartX = centerX - totalW / 2;
+        const termX = lineStartX + beforeW;
+        const hPad = fontSize * 0.18;
+        const hH = fontSize * 1.04;
+        const hY = y - fontSize * 0.78;
+        texts.push(`<rect x="${termX - hPad}" y="${hY}" width="${termW + hPad * 2}" height="${hH}" rx="${hH * 0.24}" fill="#facc15" opacity="0.88"/>`);
+        texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" ${shadow}><tspan fill="#e2e8f0">${escapeXml(before)}</tspan><tspan fill="#1a1a1a">${escapeXml(term)}</tspan><tspan fill="#e2e8f0">${escapeXml(after)}</tspan></text>`);
+      } else {
+        texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" ${shadow}><tspan fill="#e2e8f0">${escapeXml(before)}</tspan><tspan fill="#fbbf24" font-weight="850">${escapeXml(term)}</tspan><tspan fill="#e2e8f0">${escapeXml(after)}</tspan></text>`);
+      }
     } else {
       texts.push(`<text x="${centerX}" y="${y}" xml:space="preserve" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="${fontSize}" font-weight="700" fill="#e2e8f0" ${shadow}>${escapeXml(line)}</text>`);
     }
@@ -1421,6 +1539,23 @@ function wrapWords(text, maxChars) {
   return lines;
 }
 
+function wrapWordsByWidth(text, fontSize, maxWidth) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (estimateTextWidth(next, fontSize) > maxWidth && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current) lines.push(current);
+  return lines;
+}
+
 function wrapMixed(text, maxChars) {
   const chars = String(text).match(/[A-Za-z0-9'"’:-]+|\s+|./g) || [];
   const lines = [];
@@ -1428,6 +1563,23 @@ function wrapMixed(text, maxChars) {
   chars.forEach((token) => {
     const next = current + token;
     if (displayWidth(next) > maxChars && current) {
+      lines.push(current.trim());
+      current = token.trimStart();
+    } else {
+      current = next;
+    }
+  });
+  if (current.trim()) lines.push(current.trim());
+  return lines;
+}
+
+function wrapMixedByWidth(text, fontSize, maxWidth, isChinese = false) {
+  const tokens = String(text || "").match(/[A-Za-z0-9'"’:-]+|\s+|./g) || [];
+  const lines = [];
+  let current = "";
+  tokens.forEach((token) => {
+    const next = current + token;
+    if (estimateTextWidth(next.trim(), fontSize, isChinese) > maxWidth && current.trim()) {
       lines.push(current.trim());
       current = token.trimStart();
     } else {

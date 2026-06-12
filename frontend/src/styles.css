@@ -399,7 +399,15 @@ a {
   width: 30px;
   height: 30px;
   border-radius: 10px;
+  object-fit: cover;
   box-shadow: 0 10px 24px rgba(0, 122, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.brand-row span {
+  color: #31446a;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
 }
 
 .page-shell {
@@ -2014,4 +2022,15 @@ video {
 
 .toolbar-group.right {
   margin-left: auto;
+}
+
+.file-upload-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.file-upload-action input {
+  display: none;
 }

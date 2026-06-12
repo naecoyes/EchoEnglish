@@ -8,7 +8,8 @@ const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
-const { generateStoryWorkflow, getUniqueImageScenes } = require("./storyWorkflow");
+const sharp = require("sharp");
+const { generateStoryWorkflow, getUniqueImageScenes, writeQualityReport } = require("./storyWorkflow");
 const { composeStoryVideo } = require("./storyVideoComposer");
 const { generateImages: generateMiniMaxImages } = require("./minimaxImage");
 const { generateImages: generateGoogleImages } = require("./googleImage");
@@ -16,6 +17,7 @@ const { createPureStory, createStoryOutline, generateVideoTemplate, getLlmConfig
 const { renderMarkdown } = require("./renderers");
 const { generateCoverImageSet, resolveCoverProvider } = require("./coverImages");
 const { MINIMAX_IMAGE_MODEL, MINIMAX_MUSIC_MODEL } = require("./minimaxDefaults");
+const { applyVisualContinuity, normalizeContinuityMode } = require("./visualContinuity");
 const {
   clearSavedApiKey,
   clearSavedGoogleApiKey,
@@ -225,6 +227,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const topic = String(body.topic || "A Rainy Day in London").trim() || "A Rainy Day in London";
       const minutes = clampMinutes(body.minutes);
+      const visualContinuityMode = normalizeContinuityMode(body.visualContinuityMode);
       const template = await resolveTemplateForTopic(topic, minutes, body);
       const { outline, searchContext } = await buildSearchBackedOutline(topic, minutes, template);
       const draft = await createPureStory({
@@ -235,6 +238,7 @@ const server = http.createServer(async (req, res) => {
         outline,
         template
       });
+      applyVisualContinuity(draft, { mode: visualContinuityMode });
       const autosaved = await saveStoryDraft({ topic, template, outline, draft, searchContext, revisionNote: null });
       return sendJson(res, {
         outline,
@@ -251,6 +255,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const topic = String(body.topic || body.draft?.topic || "Story Video").trim() || "Story Video";
       const minutes = clampMinutes(body.minutes);
+      const visualContinuityMode = normalizeContinuityMode(body.visualContinuityMode || body.draft?.visualContinuity?.mode);
       const template = await resolveTemplateForTopic(topic, minutes, body, [body.draft?.template?.id, body.draft?.outline?.template?.id]);
       const draft = await reviseStoryDraft({
         topic,
@@ -259,6 +264,7 @@ const server = http.createServer(async (req, res) => {
         feedback: body.feedback,
         template
       });
+      applyVisualContinuity(draft, { mode: visualContinuityMode });
       const autosaved = await saveStoryDraft({
         topic,
         template,
@@ -313,6 +319,11 @@ const server = http.createServer(async (req, res) => {
       return await regenerateOutputImages(res, slug);
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/upload-custom-cover")) {
+      const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
+      return await uploadCustomCover(req, res, slug);
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/api/outputs/") && url.pathname.endsWith("/regenerate-cover")) {
       const slug = decodeURIComponent(url.pathname.split("/").at(-2) || "");
       return await regenerateOutputCover(res, slug);
@@ -354,11 +365,13 @@ async function startStoryJob(res, body) {
   if (validation) return sendJson(res, { error: validation }, 400);
 
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const slug = slugify(topic);
+  const slug = await allocateOutputSlug(topic, id);
   const logs = [];
   const confirmedOutline = normalizeOutlineInput(body.outline);
   const confirmedDraft = normalizeStoryDraftInput(body.storyDraft);
   const template = await resolveTemplateForTopic(topic, minutes, body, [confirmedDraft?.template?.id, confirmedOutline?.template?.id]);
+  const visualContinuityMode = normalizeContinuityMode(body.visualContinuityMode || confirmedDraft?.visualContinuity?.mode);
+  if (confirmedDraft) applyVisualContinuity(confirmedDraft, { mode: visualContinuityMode });
   const job = {
     id,
     status: "queued",
@@ -376,6 +389,7 @@ async function startStoryJob(res, body) {
       topic,
       minutes,
       templateId: template?.id || null,
+      visualContinuityMode,
       outline: confirmedOutline,
       storyDraft: confirmedDraft
     },
@@ -401,6 +415,22 @@ async function startStoryJob(res, body) {
     minutes,
     outputBase: `/outputs/${slug}/`
   }, 202);
+}
+
+async function allocateOutputSlug(topic, jobId) {
+  const base = slugify(topic);
+  const stamp = String(jobId || Date.now()).split("-")[0] || String(Date.now());
+  const topicHash = crypto
+    .createHash("sha1")
+    .update(String(topic || "story"))
+    .digest("hex")
+    .slice(0, 8);
+  const unique = `${base === "story" ? "story" : base}-${topicHash}-${stamp}`;
+
+  if (base === "story") return unique;
+  const outputDir = path.join(OUTPUT_ROOT, base);
+  if (!await fileExists(outputDir)) return base;
+  return unique;
 }
 
 async function continueStoryJob(res, id) {
@@ -482,6 +512,7 @@ async function runStoryJobAsync(job) {
 
       job.result = await generateStoryWorkflow({
         topic: job.topic,
+        slug: job.slug,
         minutes: job.minutes,
         outputRoot: OUTPUT_ROOT,
         ttsProvider,
@@ -499,6 +530,7 @@ async function runStoryJobAsync(job) {
         musicVolume: 0.12,
         videoEncoder: settings.media?.videoEncoder || "auto",
         videoOrientation: settings.media?.videoOrientation || "landscape",
+        visualContinuityMode: job.request?.visualContinuityMode || "documentary",
         storyMode: "pure-story",
         template,
         storyOutline,
@@ -637,6 +669,7 @@ function serializeJobObject(job) {
       audio: `${base}audio.wav`,
       music: job.result?.musicSummary ? `${base}music/background.mp3` : null,
       imagePrompts: `${base}image-prompts.md`,
+      visualContinuity: `${base}visual-continuity.json`,
       scriptJson: `${base}script.json`,
       jobState: `${base}job-state.json`,
       audioManifest: `${base}audio-manifest.json`,
@@ -701,10 +734,10 @@ async function persistJob(job) {
     startedAt: job.startedAt || null,
     completedAt: job.completedAt || null,
     updatedAt: new Date().toISOString(),
-    error: job.error || null,
-    errorType: job.errorType || null,
-    recoverable: Boolean(job.recoverable),
-    failedStage: job.failedStage || firstFailedStage(job.stages),
+    error: job.status === "completed" ? null : job.error || null,
+    errorType: job.status === "completed" ? null : job.errorType || null,
+    recoverable: job.status === "completed" ? false : Boolean(job.recoverable),
+    failedStage: job.status === "completed" ? null : job.failedStage || firstFailedStage(job.stages),
     stages: createStages(job.stages),
     request: job.request || null,
     logs: Array.isArray(job.logs) ? [...job.logs] : [],
@@ -764,6 +797,13 @@ async function listPersistedJobs() {
 function normalizePersistedJob(job) {
   job.stages = createStages(job.stages);
   job.logs = Array.isArray(job.logs) ? job.logs : [];
+  if (job.status === "completed") {
+    job.error = null;
+    job.errorType = null;
+    job.recoverable = false;
+    job.failedStage = null;
+    return;
+  }
   if (job.status === "running" || job.status === "queued") {
     const interruptedStage = firstRunningStage(job.stages) || firstPendingAfterCompleted(job.stages) || "draft";
     const message = "Generation was interrupted before completion. Click Continue Generation to resume from saved files.";
@@ -1003,9 +1043,12 @@ async function outputPathsForSlug(slug) {
     music: await fileExists(musicPath) ? `${base}music/background.mp3` : null,
     coverYoutube: await outputImageUrl(slug, "cover-youtube"),
     coverVertical: await outputImageUrl(slug, "cover-vertical"),
+    customCoverYoutube: await outputImageUrl(slug, "custom-cover-youtube"),
+    customCoverVertical: await outputImageUrl(slug, "custom-cover-vertical"),
     draftJson: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.json")) ? `${base}draft.json` : null,
     draftMd: await fileExists(path.join(OUTPUT_ROOT, slug, "draft.md")) ? `${base}draft.md` : null,
     imagePrompts: await fileExists(path.join(outputDir, "image-prompts.md")) ? `${base}image-prompts.md` : null,
+    visualContinuity: await fileExists(path.join(outputDir, "visual-continuity.json")) ? `${base}visual-continuity.json` : null,
     coverPrompts: await fileExists(path.join(outputDir, "cover-prompts.md")) ? `${base}cover-prompts.md` : null,
     scriptJson: await fileExists(path.join(outputDir, "script.json")) ? `${base}script.json` : null,
     jobState: await fileExists(path.join(OUTPUT_ROOT, slug, "job-state.json")) ? `${base}job-state.json` : null,
@@ -1319,6 +1362,117 @@ async function rerenderOutputUi(res, slugInput) {
   });
 }
 
+async function uploadCustomCover(req, res, slugInput) {
+  const slug = slugify(slugInput);
+  if (!slug || slug !== slugInput) {
+    return sendJson(res, { error: "Invalid output slug." }, 400);
+  }
+
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const audioPath = path.join(outputDir, "audio.wav");
+  if (!await fileExists(scriptPath)) {
+    return sendJson(res, { error: "script.json is required before uploading a custom cover." }, 404);
+  }
+  if (!await fileExists(audioPath)) {
+    return sendJson(res, { error: "audio.wav is required before uploading a custom cover." }, 404);
+  }
+
+  let form;
+  try {
+    form = await readMultipartForm(req, { maxBytes: 20 * 1024 * 1024 });
+  } catch (error) {
+    return sendJson(res, { error: error.message }, 400);
+  }
+
+  const orientation = normalizeCoverOrientation(form.fields.orientation);
+  const image = form.files.cover || form.files.file || Object.values(form.files)[0];
+  if (!image?.buffer?.length) {
+    return sendJson(res, { error: "Upload an image file in the 'cover' field." }, 400);
+  }
+  const uploadedExt = path.extname(image.filename || "").toLowerCase();
+  const looksLikeImage = /^image\/(png|jpe?g|webp)$/i.test(image.contentType || "")
+    || [".png", ".jpg", ".jpeg", ".webp"].includes(uploadedExt);
+  if (!looksLikeImage) {
+    return sendJson(res, { error: "Custom cover must be PNG, JPG, JPEG, or WEBP." }, 400);
+  }
+
+  const imagesDir = path.join(outputDir, "images");
+  await ensureDir(imagesDir);
+  const sceneId = orientation === "portrait" ? "custom-cover-vertical" : "custom-cover-youtube";
+  const targetPath = path.join(imagesDir, `${sceneId}.png`);
+  const dimensions = orientation === "portrait"
+    ? { width: 1080, height: 1920 }
+    : { width: 1920, height: 1080 };
+
+  try {
+    await sharp(image.buffer)
+      .rotate()
+      .resize(dimensions.width, dimensions.height, {
+        fit: "cover",
+        position: "center"
+      })
+      .png({ compressionLevel: 9 })
+      .toFile(targetPath);
+  } catch (error) {
+    return sendJson(res, { error: `Unable to process uploaded image: ${error.message}` }, 400);
+  }
+
+  const logs = [
+    `[${new Date().toISOString()}] Saved ${orientation} custom cover to images/${sceneId}.png.`,
+    `[${new Date().toISOString()}] Re-rendering ${orientation} video only. Audio is unchanged.`
+  ];
+
+  try {
+    const render = await composeOutputOrientation(slug, orientation, logs);
+    const outputs = await outputPathsForSlug(slug);
+    return sendJson(res, {
+      ok: true,
+      slug,
+      orientation,
+      coverUrl: orientation === "portrait" ? outputs.customCoverVertical : outputs.customCoverYoutube,
+      video: orientation === "portrait" ? outputs.videoPortrait : outputs.video,
+      outputs,
+      frameCount: render.scenes.length,
+      logs
+    });
+  } catch (error) {
+    return sendJson(res, {
+      ok: false,
+      slug,
+      orientation,
+      recoverable: true,
+      error: error.message,
+      logs
+    }, 400);
+  }
+}
+
+async function composeOutputOrientation(slug, orientation, logs = []) {
+  const outputDir = path.join(OUTPUT_ROOT, slug);
+  const scriptPath = path.join(outputDir, "script.json");
+  const audioPath = path.join(outputDir, "audio.wav");
+  const musicPath = path.join(outputDir, "music", "background.mp3");
+  const story = await readOptionalJson(scriptPath);
+  if (!story) throw new Error("script.json is required for video re-render.");
+  applyVisualContinuity(story, { mode: story.visualContinuity?.mode || "documentary" });
+  if (!await fileExists(audioPath)) throw new Error("audio.wav is required for video re-render.");
+  const readingItems = Array.isArray(story.readingOrder) ? story.readingOrder : [];
+  if (!readingItems.length) throw new Error("script.json has no readingOrder to render.");
+  const settings = await getEffectiveSettings();
+  const videoEncoder = settings.media?.videoEncoder || "auto";
+  return await composeStoryVideo({
+    story,
+    readingItems,
+    outputDir,
+    audioPath,
+    musicPath: await fileExists(musicPath) ? musicPath : null,
+    videoEncoder,
+    orientation,
+    logs
+  });
+}
+
 async function regenerateOutputImages(res, slugInput) {
   const slug = slugify(slugInput);
   if (!slug || slug !== slugInput) {
@@ -1331,6 +1485,8 @@ async function regenerateOutputImages(res, slugInput) {
   if (!story) {
     return sendJson(res, { error: "script.json is required for image regeneration." }, 404);
   }
+  applyVisualContinuity(story, { mode: story.visualContinuity?.mode || "documentary" });
+  await fs.writeFile(path.join(outputDir, "visual-continuity.json"), `${JSON.stringify(story.visualContinuity || {}, null, 2)}\n`, "utf8");
   const scenes = getUniqueImageScenes(story);
   if (!scenes.length) {
     return sendJson(res, { error: "No image scenes found in script.json." }, 400);
@@ -1351,24 +1507,13 @@ async function regenerateOutputImages(res, slugInput) {
   logs.push(`[${new Date().toISOString()}] Regenerating ${scenes.length} story beat images with ${imageProvider}.`);
   let results = [];
   try {
-    results = imageProvider === "google"
-      ? await generateGoogleImages({
-        scenes,
-        outputDir,
-        apiKey: settings.google?.apiKey,
-        baseUrl: settings.google?.baseUrl,
-        model: settings.google?.imageModel,
-        onProgress: (progress) => logs.push(`[${new Date().toISOString()}] Image ${progress.completed}/${progress.total}: ${progress.sceneId} ${progress.status}`)
-      })
-      : await generateMiniMaxImages({
-        scenes,
-        outputDir,
-        apiKey: settings.minimaxApiKey,
-        model: settings.models?.image || MINIMAX_IMAGE_MODEL,
-        aspectRatio: "16:9",
-        promptOptimizer: true,
-        onProgress: (progress) => logs.push(`[${new Date().toISOString()}] Image ${progress.completed}/${progress.total}: ${progress.sceneId} ${progress.status}`)
-      });
+    results = await regenerateImagesWithProviderFallback({
+      imageProvider,
+      scenes,
+      outputDir,
+      settings,
+      logs
+    });
   } catch (error) {
     await restoreImageBackup(imagesDir, backupDir);
     return sendJson(res, {
@@ -1392,6 +1537,47 @@ async function regenerateOutputImages(res, slugInput) {
     imageCount: results.length,
     ...rerender
   });
+}
+
+async function regenerateImagesWithProviderFallback({ imageProvider, scenes, outputDir, settings, logs }) {
+  const onProgress = (progress) => logs.push(`[${new Date().toISOString()}] Image ${progress.completed}/${progress.total}: ${progress.sceneId} ${progress.status}`);
+  if (imageProvider !== "google") {
+    return await generateMiniMaxImages({
+      scenes,
+      outputDir,
+      apiKey: settings.minimaxApiKey,
+      model: settings.models?.image || MINIMAX_IMAGE_MODEL,
+      aspectRatio: "16:9",
+      promptOptimizer: true,
+      onProgress
+    });
+  }
+
+  try {
+    return await generateGoogleImages({
+      scenes,
+      outputDir,
+      apiKey: settings.google?.apiKey,
+      baseUrl: settings.google?.baseUrl,
+      model: settings.google?.imageModel,
+      onProgress
+    });
+  } catch (error) {
+    const classification = classifyError(error);
+    if (!settings.minimaxApiKey || !["rate_limit", "quota_exceeded", "server_error", "network_error"].includes(classification.type)) {
+      throw error;
+    }
+    logs.push(`[${new Date().toISOString()}] Google Imagen unavailable (${classification.type}). Falling back to MiniMax image generation.`);
+    return await generateMiniMaxImages({
+      scenes,
+      outputDir,
+      apiKey: settings.minimaxApiKey,
+      model: settings.models?.image || MINIMAX_IMAGE_MODEL,
+      aspectRatio: "16:9",
+      promptOptimizer: true,
+      onProgress
+    });
+  }
 }
 
 async function regenerateOutputCover(res, slugInput) {
@@ -1503,11 +1689,29 @@ async function rerenderOutputUiPayload(slug, logs = []) {
     videoEncoder, orientation: "portrait", logs
   });
 
+  const musicManifest = await readOptionalJson(path.join(outputDir, "music-manifest.json"));
+  const musicSummary = musicManifest?.tracks
+    ? { tracks: musicManifest.tracks.filter((track) => track.status === "completed") }
+    : await fileExists(musicPath)
+      ? { tracks: [{ path: musicPath, status: "completed" }] }
+      : null;
+  const expectedMusicTracks = Number(settings.minimax?.musicTrackCount || musicManifest?.total || 3);
+  const qualityReport = await writeQualityReport({
+    outputDir,
+    story,
+    readingItems,
+    audioSummary: { audioPath },
+    musicSummary,
+    expectedMusicTracks,
+    skipAudio: false
+  });
+
   const outputs = await outputPathsForSlug(slug);
   return {
     video: outputs.video,
     outputs,
     frameCount: landscapeResult.scenes.length,
+    qualityReport,
     logs
   };
 }
@@ -3316,6 +3520,67 @@ async function readJson(req) {
   }
   const raw = Buffer.concat(chunks).toString("utf8") || "{}";
   return JSON.parse(raw);
+}
+
+async function readMultipartForm(req, { maxBytes = 20 * 1024 * 1024 } = {}) {
+  const contentTypeHeader = String(req.headers["content-type"] || "");
+  const boundaryMatch = contentTypeHeader.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!boundaryMatch) {
+    throw new Error("Expected multipart/form-data upload.");
+  }
+  const body = await readRequestBuffer(req, maxBytes);
+  return parseMultipartForm(body, boundaryMatch[1] || boundaryMatch[2]);
+}
+
+async function readRequestBuffer(req, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw new Error(`Upload is too large. Limit is ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseMultipartForm(buffer, boundary) {
+  const marker = `--${boundary}`;
+  const body = buffer.toString("latin1");
+  const fields = {};
+  const files = {};
+  for (const rawPart of body.split(marker)) {
+    if (!rawPart || rawPart === "--\r\n" || rawPart === "--") continue;
+    const part = rawPart.replace(/^\r\n/, "").replace(/\r\n--$/, "");
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+    const rawHeaders = part.slice(0, headerEnd);
+    let rawContent = part.slice(headerEnd + 4);
+    if (rawContent.endsWith("\r\n")) rawContent = rawContent.slice(0, -2);
+
+    const disposition = rawHeaders.match(/content-disposition:\s*form-data;\s*([^\r\n]+)/i);
+    if (!disposition) continue;
+    const name = (disposition[1].match(/name="([^"]+)"/i) || [])[1];
+    if (!name) continue;
+    const filename = (disposition[1].match(/filename="([^"]*)"/i) || [])[1];
+    const type = (rawHeaders.match(/content-type:\s*([^\r\n]+)/i) || [])[1] || "application/octet-stream";
+    if (filename !== undefined && filename !== "") {
+      files[name] = {
+        filename,
+        contentType: type.trim(),
+        buffer: Buffer.from(rawContent, "latin1")
+      };
+    } else {
+      fields[name] = Buffer.from(rawContent, "latin1").toString("utf8").trim();
+    }
+  }
+  return { fields, files };
+}
+
+function normalizeCoverOrientation(value) {
+  const text = String(value || "landscape").toLowerCase();
+  return text === "portrait" || text === "vertical" || text === "9:16" ? "portrait" : "landscape";
 }
 
 function sendHtml(res, html) {

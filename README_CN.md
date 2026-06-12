@@ -147,6 +147,7 @@ outputs/{slug}/
   subtitles.srt                     # 字幕文件
   audio.wav                         # 合并后的配音音频
   image-prompts.md                  # 图片生成提示词
+  visual-continuity.json            # 视频级视觉连续性设定
   youtube-copy.md                   # YouTube 发布文案 (中英标题、简介、时间戳章节等)
   youtube-copy.json                 # YouTube 文案 JSON 格式
   audio-manifest.json               # 音频缓存状态清单
@@ -191,6 +192,19 @@ outputs/{slug}/
 - **Generate Covers**：仅重新生成封面背景图与合成图。
 - **DL YouTube Cover**：下载横屏封面图。
 - **DL Vertical Cover**：下载竖屏封面图。
+
+## 视觉连续性
+
+EchoEnglish 默认使用 **Documentary Continuity（纪录片稳定感）**。它不会假设文生图模型每次都能生成同一张脸，而是通过视频级视觉设定来保持整体观感稳定。每个输出目录会生成 `visual-continuity.json`，其中包含：
+
+- 全片统一的视觉风格、色彩、镜头语言和负面提示词；
+- 人物或主题的视觉锚点；
+- 反复出现的地点、物件和环境锚点；
+- 每张图片覆盖 2-5 句字幕的复用策略。
+
+场景图片提示词会由“视频级连续性锚点 + 当前剧情画面”组合生成。这样可以通过重复环境、物件、服装色系、背影、侧影、剪影和纪录片式场景来减少人物漂移。人物传记、公司历史和国家历史类视频默认避免强行要求精确真人脸，除非后续提供可信参考图。
+
+`image-manifest.json` 会记录每张图的 `continuityMode`、`continuityGroupId`、`characterAnchor` 和 `locationAnchor`；`timeline-manifest.json` 会记录每一帧使用的 `continuityGroupId`，方便排查哪些句子共用了同一组视觉画面。
 
 ## 视频 UI 渲染
 

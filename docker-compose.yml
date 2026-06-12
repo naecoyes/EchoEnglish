@@ -13,6 +13,8 @@ services:
     volumes:
       # Generated videos, audio, images, scripts
       - ./outputs:/app/outputs
+      # Built frontend assets. Run `npm run build` locally, then Docker serves the latest UI without rebuilding the image.
+      - ./dist:/app/dist:ro
       # Settings (API keys, models) stored outside the container
       - ./data:/app/data
       # Local settings JSON for API keys
@@ -58,7 +60,7 @@ services:
       - "host.docker.internal:host-gateway"
 
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/config"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/manifest.webmanifest"]
       interval: 30s
       timeout: 10s
       start_period: 20s
